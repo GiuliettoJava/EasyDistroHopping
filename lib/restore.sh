@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-B="$(cd "${1:-$(dirname "${BASH_SOURCE[0]}")}" && pwd)" || { echo "Backup folder not found: ${1:-}"; exit 1; }
-RED=$'\e[31m'; GRN=$'\e[32m'; YLW=$'\e[33m'; BLU=$'\e[34m'; RST=$'\e[0m'
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/common.sh"
+B="$(cd "${1:-$SCRIPT_DIR/..}" && pwd)" || die "Backup folder not found: ${1:-}"
 FAILED=()
 info() { echo; echo "${BLU}==>${RST} $*"; }
 ok()   { echo "${GRN}[OK]${RST} $*"; }
 fail() { echo "${RED}[FAILED]${RST} $*"; FAILED+=("$*"); }
-die()  { echo "${RED}[ERROR]${RST} $*"; exit 1; }
 step() { local d="$1"; shift; if "$@"; then ok "$d"; else fail "$d"; fi; }
 
 [[ $EUID -ne 0 ]] || die "Do not run as root: run it as a normal user (it will ask for sudo)."
 [[ -f "$B/home.tar.zst" ]] || die "home.tar.zst not found in $B"
 source "$B/meta/system-info.env"
+OLD_DE="${de:-}"
+[[ -z "$OLD_DE" && -f "$B/critical/migrazione.knsv" ]] && OLD_DE=kde
 OLD_USER="$user"
 if [[ "$(id -un)" != "$OLD_USER" || "$HOME" != "/home/$OLD_USER" ]]; then
   echo "${YLW}Current user: $(id -un) — backup user: $OLD_USER${RST}"
@@ -22,8 +24,8 @@ fi
 NEW_FEDORA="$(rpm -E %fedora)"
 [[ "$NEW_FEDORA" == "$fedora" ]] || echo "${YLW}Note: backup is from Fedora $fedora, current system is Fedora $NEW_FEDORA.${RST}"
 
-if pgrep -u "$(id -u)" -x plasmashell >/dev/null; then
-  echo "${YLW}Plasma is running for this user.${RST}"
+if graphical_session_running; then
+  echo "${YLW}A graphical desktop session is running for this user.${RST}"
   echo "Recommended: log out, press Ctrl+Alt+F3, log in from the TTY and run the script again."
   read -rp "Continue anyway (you must reboot IMMEDIATELY at the end)? [y/N] " a
   [[ "$a" =~ ^[sSyY]$ ]] || exit 1
@@ -158,15 +160,22 @@ if [[ -s "$SNAPLIST" ]]; then
   fi
 fi
 
-info "[6/10] KDE look & feel with konsave"
-export PATH="$HOME/.local/bin:$PATH"
-if command -v konsave >/dev/null; then
-  step "konsave import 'migrazione'" konsave -i "$B/critical/migrazione.knsv" -f
-  step "konsave apply 'migrazione'"  konsave -a migrazione
-  [[ -f "$B/critical/plasma6_backup.knsv" ]] && konsave -i "$B/critical/plasma6_backup.knsv" -f >/dev/null 2>&1
-  konsave -l
+NEW_DE="$(detect_de)"
+info "[6/10] Desktop look & feel (backup: ${OLD_DE:-unknown}, this system: $NEW_DE)"
+if [[ "$OLD_DE" != kde ]]; then
+  ok "backup is not from KDE: konsave skipped (desktop settings come from the home archive)"
+elif [[ "$NEW_DE" != kde ]]; then
+  fail "konsave skipped: the backup is from KDE but this system runs $NEW_DE (install KDE Plasma, then: konsave -i $B/critical/migrazione.knsv -f && konsave -a migrazione)"
 else
-  fail "konsave not installed: python3 -m pip install --user konsave && konsave -i $B/critical/migrazione.knsv -f && konsave -a migrazione"
+  export PATH="$HOME/.local/bin:$PATH"
+  if command -v konsave >/dev/null; then
+    step "konsave import 'migrazione'" konsave -i "$B/critical/migrazione.knsv" -f
+    step "konsave apply 'migrazione'"  konsave -a migrazione
+    [[ -f "$B/critical/plasma6_backup.knsv" ]] && konsave -i "$B/critical/plasma6_backup.knsv" -f >/dev/null 2>&1
+    konsave -l
+  else
+    fail "konsave not installed: python3 -m pip install --user konsave && konsave -i $B/critical/migrazione.knsv -f && konsave -a migrazione"
+  fi
 fi
 
 info "[7/10] Wi-Fi / VPN connections (with passwords)"
@@ -256,6 +265,6 @@ fi
 echo "Log: $LOG"
 echo
 echo "Now REBOOT:  sudo reboot"
-echo "After rebooting: KWallet will use the old system's password;"
+[[ "$NEW_DE" == kde ]] && echo "After rebooting: KWallet will use the old system's password."
 echo "Claude Code chats are in ~/.claude/projects (claude --resume)."
 echo "=================================================================="

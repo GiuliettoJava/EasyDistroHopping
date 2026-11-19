@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RED=$'\e[31m'; GRN=$'\e[32m'; YLW=$'\e[33m'; BLU=$'\e[34m'; RST=$'\e[0m'
-die() { echo "${RED}[ERROR]${RST} $*"; exit 1; }
-yes_no() { local a; read -rp "$1 [y/N] " a; [[ "$a" =~ ^[sSyY]$ ]]; }
+LIB="$HERE/lib"
+[[ -f "$LIB/common.sh" ]] || { echo "lib/common.sh not found next to $0"; exit 1; }
+source "$LIB/common.sh"
 
 SELECTED_DIR=""
 SELECTED_DEV=""
@@ -123,8 +123,8 @@ choose_backup() {
 
 do_save() {
   local dest="${1:-}" rc
-  [[ -f "$HERE/backup.sh" ]]  || die "backup.sh not found in $HERE"
-  [[ -f "$HERE/restore.sh" ]] || die "restore.sh not found in $HERE"
+  [[ -f "$LIB/backup.sh" ]]  || die "backup.sh not found in $LIB"
+  [[ -f "$LIB/restore.sh" ]] || die "restore.sh not found in $LIB"
   if [[ -z "$dest" ]]; then
     choose_volume "Where should the backup be saved?"
     dest="$SELECTED_DIR"
@@ -139,7 +139,7 @@ do_save() {
   echo "${GRN}BACKUP${RST} of this system to: $dest"
   local extra=()
   yes_no "Include the Trash too?" && extra=(--include-trash)
-  bash "$HERE/backup.sh" "$dest" "${extra[@]}"
+  bash "$LIB/backup.sh" "$dest" "${extra[@]}"
   rc=$?
   if [[ -n "$SELECTED_DEV" ]] && yes_no "Unmount $SELECTED_DEV now?"; then unmount_volume "$SELECTED_DEV"; fi
   exit $rc
@@ -156,8 +156,9 @@ do_restore() {
   fi
   dir="$(cd "$dir" 2>/dev/null && pwd)" || die "Backup folder not found"
   [[ -f "$dir/home.tar.zst" ]] || die "$dir is not a backup folder (home.tar.zst missing)"
-  if [[ -f "$HERE/restore.sh" ]]; then script="$HERE/restore.sh"
-  elif [[ -f "$dir/restore.sh" ]]; then script="$dir/restore.sh"
+  if   [[ -f "$LIB/restore.sh" ]];     then script="$LIB/restore.sh"
+  elif [[ -f "$dir/lib/restore.sh" ]]; then script="$dir/lib/restore.sh"
+  elif [[ -f "$dir/restore.sh" ]];     then script="$dir/restore.sh"
   else die "restore.sh missing"; fi
   echo
   echo "${GRN}RESTORE${RST} from: $dir"
@@ -177,8 +178,9 @@ case "${1:-}" in
   mount)         do_mount ;;
   "")
     echo "=========================================="
-    echo "  saveRestore — Fedora KDE migration"
+    echo "  migrate — Fedora system migration"
     echo "=========================================="
+    echo "Desktop environment: $(detect_de)"
     [[ -f "$HERE/home.tar.zst" ]] && echo "${YLW}Running from inside a backup:${RST} $HERE"
     echo "  1) SAVE    — back up this system to an external disk"
     echo "  2) RESTORE — restore this system from a backup"

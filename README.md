@@ -1,24 +1,41 @@
-# Fedora KDE backup & restore
+# Fedora backup & restore
 
-Bash scripts to move an entire Fedora KDE system (files, programs, KDE look & feel, SSH, Claude Code chats, Wi-Fi) from an old install to a fresh **Fedora 44 KDE** install.
+Bash scripts to move an entire Fedora system (files, programs, desktop look & feel, SSH, Claude Code chats, Wi-Fi) from an old install to a fresh one. They work with any desktop environment; KDE Plasma gets extra handling (konsave, KWallet), which is skipped automatically on other desktops.
 
-`saveRestore.sh` is the **only script you need to launch**: it lets you pick the external disk, mounts it, and then runs the backup or the restore. The other two scripts do the actual work.
+**`migrate.sh` is the only script you need to launch**: it lets you pick the external disk, mounts it, and then runs the backup or the restore.
 
-| Script | What it does |
-|---|---|
-| `saveRestore.sh` | menu: pick the disk (and mount it), then **save**, **restore** or just **mount** |
-| `backup.sh` | creates `fedora-backup-YYYYMMDD-HHMM/` on the chosen disk |
-| `restore.sh` | restores everything on the new system |
+```
+.
+├── migrate.sh        ← entry point: menu, disk picker, mount
+├── lib/
+│   ├── backup.sh     ← does the backup   (called by migrate.sh)
+│   ├── restore.sh    ← does the restore  (called by migrate.sh)
+│   └── common.sh     ← shared helpers: colors, prompts, desktop detection
+└── README.md
+```
+
+### Desktop environment detection
+
+`lib/common.sh` detects the desktop from `XDG_CURRENT_DESKTOP` / `DESKTOP_SESSION`, or (e.g. from a TTY) from the installed session binaries: KDE, GNOME, Xfce, Cinnamon, MATE, LXQt, Budgie. The result is shown in the menu and saved in the backup (`meta/system-info.env`, `de=`).
+
+| | KDE | Other desktops |
+|---|---|---|
+| KWallet data in the critical archive | ✔ | skipped (GNOME Keyring `~/.local/share/keyrings` is always included) |
+| Baloo search index excluded from the home | ✔ | not needed |
+| konsave profile export + check | ✔ | skipped |
+| konsave import/apply on restore | ✔ only if the backup **and** the new system are KDE | skipped |
+
+On every desktop the settings themselves are restored with the home archive (`~/.config`, `~/.local/share`, ...).
 
 ### Usage
 
-Keep the three scripts in the same folder (a clone of this repo, or the copy inside a backup folder), then:
+Keep `migrate.sh` and `lib/` together (a clone of this repo, or the copy inside a backup folder), then:
 
 ```bash
-bash saveRestore.sh                         # interactive menu
-bash saveRestore.sh save [DEST]             # backup
-bash saveRestore.sh restore [BACKUP_DIR]    # restore
-bash saveRestore.sh mount                   # only pick and mount a disk
+bash migrate.sh                         # interactive menu
+bash migrate.sh save [DEST]             # backup
+bash migrate.sh restore [BACKUP_DIR]    # restore
+bash migrate.sh mount                   # only pick and mount a disk
 ```
 
 Without arguments, `save` and `restore` show the **disk picker**:
@@ -35,9 +52,9 @@ Without arguments, `save` and `restore` show the **disk picker**:
 - Only partitions with a usable filesystem (ext4, btrfs, xfs, f2fs, exFAT, FAT, NTFS, unlocked LUKS) are listed; the disk(s) holding `/`, `/boot` and `/home` are hidden.
 - If the chosen disk is not mounted, it is mounted with `udisksctl mount` (falling back to `sudo mount` under `/mnt`).
 - **save**: if the disk root is not writable by your user (e.g. a fresh ext4 disk), a `backups/` folder owned by you is created on it. At the end it offers to unmount the disk.
-- **restore**: lists the `fedora-backup-*` folders found on the disk (newest first), marking whether each one finished as *verified*. If `saveRestore.sh` is run from inside a backup folder, that backup is used directly.
+- **restore**: lists the `fedora-backup-*` folders found on the disk (newest first), marking whether each one finished as *verified*. If `migrate.sh` is run from inside a backup folder, that backup is used directly.
 
-The restore always uses the `restore.sh` next to `saveRestore.sh`, falling back to the copy inside the backup.
+The restore always uses `lib/restore.sh` next to `migrate.sh`, falling back to the copy inside the backup.
 
 To mount a disk by hand instead:
 
@@ -58,16 +75,16 @@ udisksctl unmount -b /dev/sdX1
 
 | Part | Content |
 |---|---|
-| `critical/critical.tar.zst` | a separate, redundant copy of SSH, GnuPG, Claude Code, KWallet, git/gh config, konsave, shell rc files, DBeaver, FileZilla, PuTTY, MongoDB — still safe even if the big archive has problems |
-| `critical/*.knsv` | konsave profile `migrazione` (current KDE look & feel) and, if present, the older `plasma6_backup` profile |
+| `critical/critical.tar.zst` | a separate, redundant copy of SSH, GnuPG, Claude Code, GNOME Keyring, git/gh config, shell rc files, DBeaver, FileZilla, PuTTY, MongoDB, plus KWallet and konsave config on KDE — still safe even if the big archive has problems |
+| `critical/*.knsv` | **KDE only**: konsave profile `migrazione` (current KDE look & feel) and, if present, the older `plasma6_backup` profile |
 | `home.tar.zst` | the whole home, with permissions, xattrs and ACLs |
 | `pkgs/` | user-installed dnf packages, RPMs installed from local files, COPR repos, flatpak apps and remotes, snap list, pip `--user`, pipx, VS Code extensions |
 | `system/` | full `/etc` (includes Wi-Fi/VPN connections with passwords, repos, sysctl, GRUB config, sudoers), GRUB themes, `/opt` (except containerd), `/usr/local`, Docker volumes, snap data snapshot (`snap save` + `snap export-snapshot`), user crontab |
 | `meta/` | user/uid/groups, hostname, Fedora version, locale, disks, fstab, enabled systemd units, network connections, hardware |
 
-Excluded from the home archive, because they are regenerated or reinstalled: `~/.cache`, the Baloo search index, user flatpak installations (`~/.local/share/flatpak`), flatpak app caches, and the Trash (unless `--include-trash` or `y` in the menu). If the destination is inside the home, previous backups are excluded too.
+Excluded from the home archive, because they are regenerated or reinstalled: `~/.cache`, the Baloo search index (KDE), user flatpak installations (`~/.local/share/flatpak`), flatpak app caches, and the Trash (unless `--include-trash` or `y` in the menu). If the destination is inside the home, previous backups are excluded too.
 
-At the end every archive is test-extracted, the presence of the essentials (SSH key and config, Claude Code projects, konsave profile) is checked, the scripts and this README are copied into the backup folder (so the disk alone is enough on the new PC) and a `SHA256SUMS` file is written.
+At the end every archive is test-extracted, the presence of the essentials (SSH key and config, Claude Code projects, konsave profile on KDE) is checked, the scripts and this README are copied into the backup folder (so the disk alone is enough on the new PC) and a `SHA256SUMS` file is written.
 
 > Notes: a tar exit code of 1 ("file changed while reading") is treated as acceptable. konsave exports to a temporary folder on the local disk first, because on exFAT its icon symlinks would be expanded into tens of GB.
 
@@ -81,7 +98,7 @@ The rest of this document is the **restore guide**.
 |---|---|
 | **Backup USB stick/disk** | contains the `fedora-backup-YYYYMMDD-HHMM/` folder |
 | **Another USB stick** for the installer | ≥ 4 GB, it will be wiped. **Do not use the backup one!** |
-| Fedora 44 KDE ISO | `Fedora-KDE-Desktop-Live-44-1.7.x86_64.iso` |
+| Fedora 44 ISO | the edition you want, e.g. `Fedora-KDE-Desktop-Live-44-1.7.x86_64.iso` (to keep the KDE look & feel, install KDE again) |
 | Internet connection | wired is easier: Wi-Fi is only restored later |
 
 The backup folder must contain:
@@ -89,12 +106,13 @@ The backup folder must contain:
 ```
 fedora-backup-XXXX/
 ├── home.tar.zst          ← the whole home
-├── critical/             ← SSH, Claude Code, wallet + konsave profile (migrazione.knsv)
-├── pkgs/                 ← dnf, flatpak, pip package lists
-├── system/               ← /etc, GRUB theme, /opt, Docker volumes
-├── meta/                 ← info about the old system
-├── restore.sh            ← the restore script
-├── saveRestore.sh        ← launcher menu
+├── critical/             ← SSH, Claude Code, wallets (+ konsave profile on KDE)
+├── pkgs/                 ← dnf, flatpak, snap, pip package lists
+├── system/               ← /etc, GRUB theme, /opt, Docker volumes, snap data
+├── meta/                 ← info about the old system (incl. desktop environment)
+├── migrate.sh            ← launcher menu
+├── lib/                  ← backup.sh, restore.sh, common.sh
+├── README.md
 ├── SHA256SUMS            ← checksums to verify integrity
 └── backup.log
 ```
@@ -112,7 +130,7 @@ curl -LO https://download.fedoraproject.org/pub/fedora/linux/releases/44/KDE/x86
 echo "c8295961d4c41adbf785a31a17c21a971d3b7415fda72dcad0c11c49577bf03a  Fedora-KDE-Desktop-Live-44-1.7.x86_64.iso" | sha256sum -c
 ```
 
-It must print `OK`. Then write it to the **second** USB stick with balenaEtcher or Fedora Media Writer.
+It must print `OK`. (This is the KDE edition; pick the ISO of your desktop's edition from getfedora.org if you use another one.) Then write it to the **second** USB stick with balenaEtcher or Fedora Media Writer.
 
 ---
 
@@ -127,7 +145,7 @@ It must print `OK`. Then write it to the **second** USB stick with balenaEtcher 
    | Why | |
    |---|---|
    | same user | Claude Code chats are tied to the `/home/<user>/...` path |
-   | same password | KWallet (saved browser and Wi-Fi passwords) is unlocked at login |
+   | same password | KWallet / GNOME Keyring (saved browser and Wi-Fi passwords) is unlocked at login |
 
 4. Reboot, log in for the first time and connect to the internet.
 
@@ -146,7 +164,7 @@ sudo reboot
 
 ## 4. Switch to a text console (TTY)
 
-The restore must run **without Plasma running**, otherwise KDE overwrites the freshly restored settings when you log out.
+The restore must run **without a desktop session running**, otherwise the desktop overwrites the freshly restored settings when you log out.
 
 1. **Log out** (do not shut down).
 2. At the login screen press **Ctrl + Alt + F3**.
@@ -156,7 +174,7 @@ The restore must run **without Plasma running**, otherwise KDE overwrites the fr
 
 ## 5. Get the scripts
 
-You need `saveRestore.sh` and `restore.sh`. Either:
+You need `migrate.sh` and the `lib/` folder. Either:
 
 - **from this repository** (needs internet):
   ```bash
@@ -175,7 +193,7 @@ You need `saveRestore.sh` and `restore.sh`. Either:
 ## 6. Run the restore
 
 ```bash
-bash saveRestore.sh
+bash migrate.sh
 ```
 
 - Choose **2) RESTORE**
@@ -188,7 +206,7 @@ bash saveRestore.sh
 Alternative without the menu:
 
 ```bash
-bash restore.sh /run/media/$USER/<LABEL>/fedora-backup-XXXX
+bash lib/restore.sh /run/media/$USER/<LABEL>/fedora-backup-XXXX
 ```
 
 ### What the script does, in order
@@ -201,7 +219,7 @@ bash restore.sh /run/media/$USER/<LABEL>/fedora-backup-XXXX
 | 3 | **SSH** | fixes permissions (`~/.ssh` 700, keys 600) |
 | 4 | Packages | user-installed dnf packages, manual RPMs (DBeaver, Compass, Etcher, GitKraken) from `~/Downloads`, pip/pipx |
 | 5 | Flatpak & Snap | flatpak apps from Flathub or from `.flatpak` bundle files; snapd + snaps on the same channel (classic when needed) + their data snapshot |
-| 6 | **Konsave** | imports and applies the `migrazione` profile |
+| 6 | **Look & feel** | KDE → KDE: imports and applies the konsave `migrazione` profile; otherwise skipped (settings come from the home) |
 | 7 | Network | Wi-Fi and VPN connections with their passwords |
 | 8 | System | sysctl, udev, sudoers, `/etc/hosts`, manually installed apps in `/opt` (e.g. Postman), hostname |
 | 9 | GRUB | GRUB theme + regenerates `grub.cfg` |
@@ -211,7 +229,7 @@ The script **does not stop on individual errors**: it keeps going and prints the
 
 **Details worth knowing**
 
-- If your current user differs from the backup's user, or Plasma is running, it asks before continuing.
+- If your current user differs from the backup's user, or a desktop session (Plasma, GNOME Shell, Xfce, ...) is running, it asks before continuing.
 - The old `/etc` is extracted to a temporary folder and **only the needed pieces** are copied over; existing files on the new system are never overwritten.
 - Before extracting the home, the fresh system's `.config` and `.local` are saved to `~/.home-fresh-before-restore.tar.zst`.
 - Third-party repos and their GPG keys are copied from the old `/etc`; if the Fedora version changed, COPR repo version numbers are updated.
@@ -239,12 +257,12 @@ sudo reboot
 
 | What | How to check |
 |---|---|
-| KDE look & feel | theme, panels, icons and wallpaper should be the same as before |
+| Look & feel | theme, panels, icons and wallpaper should be the same as before |
 | GRUB theme | visible at boot |
 | SSH | `ssh -T git@github.com` or `ssh <your-server>` |
 | Claude Code | `cd ~/path/to/project && claude --resume` → your old chats should show up |
 | Wi-Fi | saved networks connect automatically |
-| Browsers | Opera/Chrome with passwords and sessions (depends on KWallet) |
+| Browsers | Opera/Chrome with passwords and sessions (depends on KWallet / GNOME Keyring) |
 | Docker | `docker volume ls` → your volumes should be listed (without `sudo`) |
 | Flatpak / Snap | your apps are in the menu; `snap list` |
 
@@ -256,7 +274,7 @@ sudo reboot
 - Restore log: `~/restore-YYYYMMDD-HHMM.log`
 - The list of failed steps is at the end of the log
 
-**The KDE look & feel was not applied**
+**The KDE look & feel was not applied** (KDE only)
 ```bash
 python3 -m pip install --user konsave
 konsave -i /run/media/$USER/<DISK>/fedora-backup-*/critical/migrazione.knsv -f

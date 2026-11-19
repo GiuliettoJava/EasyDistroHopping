@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+source "$SCRIPT_DIR/common.sh"
+
 DEST_ROOT="${1:-}"
 INCLUDE_TRASH=0
 [[ "${2:-}" == "--include-trash" ]] && INCLUDE_TRASH=1
 
-RED=$'\e[31m'; GRN=$'\e[32m'; YLW=$'\e[33m'; BLU=$'\e[34m'; RST=$'\e[0m'
-die()  { echo "${RED}[ERROR]${RST} $*"; exit 1; }
 info() { echo "${BLU}==>${RST} $*"; }
 ok()   { echo "${GRN}[OK]${RST} $*"; }
 warn() { echo "${YLW}[WARNING]${RST} $*"; WARNINGS+=("$*"); }
@@ -21,24 +23,26 @@ USER_NAME="$(id -un)"
 HOME_DIR="$HOME"
 STAMP="$(date +%Y%m%d-%H%M)"
 B="$DEST_ROOT/fedora-backup-$STAMP"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DE="$(detect_de)"
+IS_KDE=0; [[ "$DE" == kde ]] && IS_KDE=1
 
 FSTYPE="$(findmnt -no FSTYPE --target "$DEST_ROOT")"
 case "$FSTYPE" in
   vfat|msdos) die "Destination is FAT32: it does not support files >4GB. Format the disk as ext4, btrfs or exFAT." ;;
 esac
 info "Destination filesystem: $FSTYPE"
+info "Desktop environment: $DE$( ((IS_KDE)) || echo ' (KDE-specific steps will be skipped)')"
 if [[ "$(findmnt -no SOURCE --target "$DEST_ROOT" | sed 's/\[.*//')" == "$(findmnt -no SOURCE --target "$HOME" | sed 's/\[.*//')" ]]; then
   die "Destination '$DEST_ROOT' is on the same disk as your home! Use the external USB stick/disk (e.g. /run/media/$(id -un)/<DISK>)."
 fi
 
 EXCLUDES=(
   "$USER_NAME/.cache"
-  "$USER_NAME/.local/share/baloo"
   "$USER_NAME/.local/share/flatpak"
   "$USER_NAME/.var/app/*/cache"
   "$USER_NAME/.claude.json.tmp.*"
 )
+((IS_KDE)) && EXCLUDES+=("$USER_NAME/.local/share/baloo")
 [[ $INCLUDE_TRASH -eq 1 ]] || EXCLUDES+=("$USER_NAME/.local/share/Trash")
 case "$DEST_ROOT/" in
   "$HOME_DIR/"*) EXCLUDES+=("$USER_NAME/${DEST_ROOT#"$HOME_DIR/"}/fedora-backup-*") ;;
@@ -83,11 +87,14 @@ check_tar() {
   else warn "$desc: error (tar=$tar_rc zstd=$z_rc)"; fi
 }
 
-info "[1/7] Separate archive of critical files (SSH, Claude Code, wallet, git)"
+info "[1/7] Separate archive of critical files (SSH, GnuPG, Claude Code, git$( ((IS_KDE)) && echo ', KWallet, konsave'))"
+CRIT_PATHS=(.ssh .claude .claude.json .local/share/claude .local/bin/claude .gnupg
+            .gitconfig .config/gh .bashrc .bash_profile
+            .local/share/DBeaverData .config/filezilla .putty .mongodb
+            .local/share/keyrings)
+((IS_KDE)) && CRIT_PATHS+=(.local/share/kwalletd .config/konsave)
 CRIT=()
-for f in .ssh .claude .claude.json .local/share/claude .local/bin/claude .gnupg \
-         .local/share/kwalletd .gitconfig .config/gh .config/konsave .bashrc .bash_profile \
-         .local/share/DBeaverData .config/filezilla .putty .mongodb; do
+for f in "${CRIT_PATHS[@]}"; do
   [[ -e "$HOME_DIR/$f" || -L "$HOME_DIR/$f" ]] && CRIT+=("$USER_NAME/$f")
 done
 tar -C /home -cpf - --xattrs --acls "${CRIT[@]}" 2>>"$B/meta/tar-critical-warnings.log" \
@@ -150,6 +157,7 @@ M="$B/meta"
   echo "user=$USER_NAME"; echo "uid=$(id -u)"; echo "groups=$(id -Gn)"
   echo "hostname=$(hostnamectl hostname)"
   echo "fedora=$(rpm -E %fedora)"
+  echo "de=$DE"
   echo "date=$(date -Is)"
 } > "$M/system-info.env"
 cat /etc/os-release > "$M/os-release.txt"
@@ -178,23 +186,27 @@ else
 fi
 ls -lh "$B/home.tar.zst"
 
-info "[6/7] Saving KDE look & feel with konsave"
-if command -v konsave >/dev/null; then
-  KTMP="$HOME/.cache/konsave-export-tmp"
-  rm -rf "$KTMP"; mkdir -p "$KTMP"
-  konsave -s migrazione -f && \
-  konsave -e migrazione -d "$KTMP" -n migrazione -f && \
-  cp "$KTMP/migrazione.knsv" "$B/critical/" && ok "konsave: profile 'migrazione' exported" \
-    || warn "konsave: save/export failed"
-  if konsave -l 2>/dev/null | grep -qw plasma6_backup; then
-    konsave -e plasma6_backup -d "$KTMP" -n plasma6_backup -f >/dev/null 2>&1 && \
-    cp "$KTMP/plasma6_backup.knsv" "$B/critical/" \
-      && ok "konsave: profile 'plasma6_backup' exported" || warn "konsave: plasma6_backup export failed"
+if ((IS_KDE)); then
+  info "[6/7] Saving KDE look & feel with konsave"
+  if command -v konsave >/dev/null; then
+    KTMP="$HOME/.cache/konsave-export-tmp"
+    rm -rf "$KTMP"; mkdir -p "$KTMP"
+    konsave -s migrazione -f && \
+    konsave -e migrazione -d "$KTMP" -n migrazione -f && \
+    cp "$KTMP/migrazione.knsv" "$B/critical/" && ok "konsave: profile 'migrazione' exported" \
+      || warn "konsave: save/export failed"
+    if konsave -l 2>/dev/null | grep -qw plasma6_backup; then
+      konsave -e plasma6_backup -d "$KTMP" -n plasma6_backup -f >/dev/null 2>&1 && \
+      cp "$KTMP/plasma6_backup.knsv" "$B/critical/" \
+        && ok "konsave: profile 'plasma6_backup' exported" || warn "konsave: plasma6_backup export failed"
+    fi
+    rm -rf "$KTMP"
+    ls -lh "$B"/critical/*.knsv 2>/dev/null
+  else
+    warn "konsave not found! Install it with: python3 -m pip install --user konsave"
   fi
-  rm -rf "$KTMP"
-  ls -lh "$B"/critical/*.knsv 2>/dev/null
 else
-  warn "konsave not found!"
+  info "[6/7] Desktop look & feel: $DE is not KDE, konsave skipped (settings are in the home archive)"
 fi
 
 info "[7/7] Verifying archive integrity"
@@ -208,13 +220,15 @@ zstd -dc "$B/critical/critical.tar.zst" | tar -tf - > "$M/critical-list.txt"
 for must in "$USER_NAME/.ssh/id_ed25519" "$USER_NAME/.ssh/config" "$USER_NAME/.claude/projects/" "$USER_NAME/.claude.json"; do
   grep -q "^$must" "$M/critical-list.txt" && ok "present: $must" || { warn "MISSING: $must"; VERIFY_OK=0; }
 done
-ls "$B"/critical/migrazione.knsv >/dev/null 2>&1 && ok "present: konsave profile" || { warn "MISSING: konsave profile"; VERIFY_OK=0; }
+if ((IS_KDE)); then
+  ls "$B"/critical/migrazione.knsv >/dev/null 2>&1 && ok "present: konsave profile" || { warn "MISSING: konsave profile"; VERIFY_OK=0; }
+fi
 
-cp "$SCRIPT_DIR/restore.sh" "$B/" 2>/dev/null || warn "restore.sh not found next to backup.sh"
-cp "$SCRIPT_DIR/backup.sh"  "$B/"
-cp "$SCRIPT_DIR/saveRestore.sh" "$B/" 2>/dev/null
-cp "$SCRIPT_DIR/README.md" "$B/" 2>/dev/null
-chmod +x "$B"/*.sh 2>/dev/null
+mkdir -p "$B/lib"
+cp "$ROOT_DIR/migrate.sh" "$B/" || warn "migrate.sh not found in $ROOT_DIR"
+cp "$ROOT_DIR/README.md" "$B/" 2>/dev/null
+cp "$SCRIPT_DIR"/*.sh "$B/lib/" || warn "could not copy lib/ scripts into the backup"
+chmod +x "$B"/*.sh "$B"/lib/*.sh 2>/dev/null
 
 info "Computing SHA256 checksums..."
 ( cd "$B" && find . -type f ! -name SHA256SUMS ! -name backup.log -print0 | xargs -0 sha256sum > SHA256SUMS )
