@@ -2,30 +2,49 @@
 
 Bash scripts to move an entire Fedora KDE system (files, programs, KDE look & feel, SSH, Claude Code chats, Wi-Fi) from an old install to a fresh **Fedora 44 KDE** install.
 
+`saveRestore.sh` is the **only script you need to launch**: it lets you pick the external disk, mounts it, and then runs the backup or the restore. The other two scripts do the actual work.
+
 | Script | What it does |
 |---|---|
-| `saveRestore.sh` | single entry point with a menu: **save** (backup) or **restore** |
-| `backup.sh` | creates `fedora-backup-YYYYMMDD-HHMM/` on an external disk |
+| `saveRestore.sh` | menu: pick the disk (and mount it), then **save**, **restore** or just **mount** |
+| `backup.sh` | creates `fedora-backup-YYYYMMDD-HHMM/` on the chosen disk |
 | `restore.sh` | restores everything on the new system |
 
 ### Usage
 
-Put the three scripts in the same folder (e.g. on the backup USB stick), then:
+Keep the three scripts in the same folder (a clone of this repo, or the copy inside a backup folder), then:
 
 ```bash
-bash saveRestore.sh                 # interactive menu
-bash saveRestore.sh save [DEST]     # backup
-bash saveRestore.sh restore [DIR]   # restore
+bash saveRestore.sh                         # interactive menu
+bash saveRestore.sh save [DEST]             # backup
+bash saveRestore.sh restore [BACKUP_DIR]    # restore
+bash saveRestore.sh mount                   # only pick and mount a disk
 ```
 
-- `save`: if `DEST` is omitted and the script is on an external disk (`/run/media/...`), the backup goes there; otherwise you are asked to pick one of the mounted external disks.
-- `restore`: if `DIR` is omitted, it uses the backup folder the script is in, or the most recent `fedora-backup-*` folder next to it.
+Without arguments, `save` and `restore` show the **disk picker**:
 
-You can also call the scripts directly:
+```
+==> Where should the backup be saved?
+  1) /dev/sdb1              931.5G  exfat   BACKUP           (not mounted)
+  2) /dev/sdc1               57.3G  ext4    USBSTICK         /run/media/user/USBSTICK
+  r) rescan
+  p) enter a path manually
+  q) quit
+```
+
+- Only partitions with a usable filesystem (ext4, btrfs, xfs, f2fs, exFAT, FAT, NTFS, unlocked LUKS) are listed; the disk(s) holding `/`, `/boot` and `/home` are hidden.
+- If the chosen disk is not mounted, it is mounted with `udisksctl mount` (falling back to `sudo mount` under `/mnt`).
+- **save**: if the disk root is not writable by your user (e.g. a fresh ext4 disk), a `backups/` folder owned by you is created on it. At the end it offers to unmount the disk.
+- **restore**: lists the `fedora-backup-*` folders found on the disk (newest first), marking whether each one finished as *verified*. If `saveRestore.sh` is run from inside a backup folder, that backup is used directly.
+
+The restore always uses the `restore.sh` next to `saveRestore.sh`, falling back to the copy inside the backup.
+
+To mount a disk by hand instead:
 
 ```bash
-bash backup.sh /run/media/$USER/<DISK> [--include-trash]
-bash /run/media/$USER/<DISK>/fedora-backup-XXXX/restore.sh
+lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINTS
+udisksctl mount -b /dev/sdX1          # mounted at /run/media/$USER/<LABEL>
+udisksctl unmount -b /dev/sdX1
 ```
 
 ### Making the backup (old PC)
@@ -42,8 +61,8 @@ bash /run/media/$USER/<DISK>/fedora-backup-XXXX/restore.sh
 | `critical/critical.tar.zst` | a separate, redundant copy of SSH, GnuPG, Claude Code, KWallet, git/gh config, konsave, shell rc files, DBeaver, FileZilla, PuTTY, MongoDB — still safe even if the big archive has problems |
 | `critical/*.knsv` | konsave profile `migrazione` (current KDE look & feel) and, if present, the older `plasma6_backup` profile |
 | `home.tar.zst` | the whole home, with permissions, xattrs and ACLs |
-| `pkgs/` | user-installed dnf packages, RPMs installed from local files, COPR repos, flatpak apps and remotes, pip `--user`, pipx, VS Code extensions |
-| `system/` | full `/etc` (includes Wi-Fi/VPN connections with passwords, repos, sysctl, GRUB config, sudoers), GRUB themes, `/opt` (except containerd), `/usr/local`, Docker volumes, user crontab |
+| `pkgs/` | user-installed dnf packages, RPMs installed from local files, COPR repos, flatpak apps and remotes, snap list, pip `--user`, pipx, VS Code extensions |
+| `system/` | full `/etc` (includes Wi-Fi/VPN connections with passwords, repos, sysctl, GRUB config, sudoers), GRUB themes, `/opt` (except containerd), `/usr/local`, Docker volumes, snap data snapshot (`snap save` + `snap export-snapshot`), user crontab |
 | `meta/` | user/uid/groups, hostname, Fedora version, locale, disks, fstab, enabled systemd units, network connections, hardware |
 
 Excluded from the home archive, because they are regenerated or reinstalled: `~/.cache`, the Baloo search index, user flatpak installations (`~/.local/share/flatpak`), flatpak app caches, and the Trash (unless `--include-trash` or `y` in the menu). If the destination is inside the home, previous backups are excluded too.
@@ -135,31 +154,32 @@ The restore must run **without Plasma running**, otherwise KDE overwrites the fr
 
 ---
 
-## 5. Mount the backup disk
+## 5. Get the scripts
 
-Plug in the backup disk, then:
+You need `saveRestore.sh` and `restore.sh`. Either:
 
-```bash
-lsblk -o NAME,SIZE,FSTYPE,LABEL
-```
-
-Find the row with your disk's `LABEL` (e.g. `sdb1`) and mount it:
-
-```bash
-udisksctl mount -b /dev/sdb1
-```
-
-It will be mounted at `/run/media/$USER/<DISK>`.
+- **from this repository** (needs internet):
+  ```bash
+  git clone https://github.com/<you>/<repo>.git ~/backup-scripts
+  cd ~/backup-scripts
+  ```
+- **or from the backup disk itself**, which already contains a copy. Mount it first:
+  ```bash
+  lsblk -o NAME,SIZE,FSTYPE,LABEL     # find your disk, e.g. sdb1
+  udisksctl mount -b /dev/sdb1         # mounted at /run/media/$USER/<LABEL>
+  cd /run/media/$USER/<LABEL>/fedora-backup-*/
+  ```
 
 ---
 
 ## 6. Run the restore
 
 ```bash
-bash /run/media/$USER/<DISK>/fedora-backup-*/saveRestore.sh
+bash saveRestore.sh
 ```
 
 - Choose **2) RESTORE**
+- Pick the backup disk (it is mounted automatically) and the backup folder
 - Confirm with **y**
 - Enter your **sudo** password when asked (only once)
 
@@ -168,7 +188,7 @@ bash /run/media/$USER/<DISK>/fedora-backup-*/saveRestore.sh
 Alternative without the menu:
 
 ```bash
-bash /run/media/$USER/<DISK>/fedora-backup-*/restore.sh
+bash restore.sh /run/media/$USER/<LABEL>/fedora-backup-XXXX
 ```
 
 ### What the script does, in order
@@ -180,7 +200,7 @@ bash /run/media/$USER/<DISK>/fedora-backup-*/restore.sh
 | 2 | **Home** | extracts all your files (long part), then re-applies SSH/Claude from the safety copy |
 | 3 | **SSH** | fixes permissions (`~/.ssh` 700, keys 600) |
 | 4 | Packages | user-installed dnf packages, manual RPMs (DBeaver, Compass, Etcher, GitKraken) from `~/Downloads`, pip/pipx |
-| 5 | Flatpak | apps from Flathub, plus apps installed from `.flatpak` bundle files |
+| 5 | Flatpak & Snap | flatpak apps from Flathub or from `.flatpak` bundle files; snapd + snaps on the same channel (classic when needed) + their data snapshot |
 | 6 | **Konsave** | imports and applies the `migrazione` profile |
 | 7 | Network | Wi-Fi and VPN connections with their passwords |
 | 8 | System | sysctl, udev, sudoers, `/etc/hosts`, manually installed apps in `/opt` (e.g. Postman), hostname |
@@ -198,6 +218,7 @@ The script **does not stop on individual errors**: it keeps going and prints the
 - dnf packages are installed in bulk, skipping ones that no longer exist; if that fails, it retries one package at a time. Kernel packages and `gpg-pubkey` are skipped.
 - RPMs that were installed from local files are looked up in the restored `~/Downloads` and `~/Desktop`; flatpaks not from Flathub are looked up as `.flatpak` bundles in the same places.
 - `sudoers.d` files are validated with `visudo` before being copied; custom `/etc/hosts` lines are appended; `/opt` folders are restored only if no package recreated them.
+- Snap: installs `snapd`, creates the `/snap` symlink (needed by classic snaps), enables `snapd.socket`, installs each snap from its old tracking channel (base/core snaps are pulled in automatically), then imports and restores the data snapshot.
 - VPN connections may need their NetworkManager plugin (openvpn, wireguard...), which is installed only if it was in the dnf package list.
 - The original GRUB config is saved as `/etc/default/grub.pre-restore` before the theme line is applied.
 - System services that were enabled on the old system and are disabled here get enabled.
@@ -225,7 +246,7 @@ sudo reboot
 | Wi-Fi | saved networks connect automatically |
 | Browsers | Opera/Chrome with passwords and sessions (depends on KWallet) |
 | Docker | `docker volume ls` → your volumes should be listed (without `sudo`) |
-| Flatpak | your apps are in the menu |
+| Flatpak / Snap | your apps are in the menu; `snap list` |
 
 ---
 
@@ -272,6 +293,7 @@ zstd -dc /run/media/$USER/<DISK>/fedora-backup-*/system/etc.tar.zst | sudo tar -
 |---|---|
 | Trash | excluded, unless you chose to include it |
 | Cache (`~/.cache`) | rebuilt automatically |
+| Snaps installed from a local `.snap` file | reinstall them manually |
 | Docker images / build cache | pull them again with `docker pull` / `docker compose build` |
 | Other partitions/disks | only your home and the system files listed above are backed up |
 

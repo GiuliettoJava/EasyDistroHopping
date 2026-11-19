@@ -1,69 +1,195 @@
 #!/usr/bin/env bash
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RED=$'\e[31m'; GRN=$'\e[32m'; YLW=$'\e[33m'; RST=$'\e[0m'
+RED=$'\e[31m'; GRN=$'\e[32m'; YLW=$'\e[33m'; BLU=$'\e[34m'; RST=$'\e[0m'
 die() { echo "${RED}[ERROR]${RST} $*"; exit 1; }
+yes_no() { local a; read -rp "$1 [y/N] " a; [[ "$a" =~ ^[sSyY]$ ]]; }
 
-pick_dest() {
-  local disks=() d i=1 c
-  for d in /run/media/"$(id -un)"/*/; do [[ -d "$d" ]] && disks+=("${d%/}"); done
-  ((${#disks[@]})) || die "No external disk mounted in /run/media/$(id -un). Plug in the USB stick and open it in Dolphin, then try again." >&2
-  echo "Available external disks:" >&2
-  for d in "${disks[@]}"; do
-    echo "  $i) $d  ($(df -h --output=avail "$d" | tail -1 | tr -d ' ') free, $(findmnt -no FSTYPE --target "$d"))" >&2
+SELECTED_DIR=""
+SELECTED_DEV=""
+MOUNTED_WITH_SUDO=0
+
+disk_of() { lsblk -lspno NAME,TYPE "$1" 2>/dev/null | awk '$2=="disk"{print $1; exit}'; }
+mountpoint_of() { findmnt -no TARGET -S "$1" 2>/dev/null | head -1; }
+
+system_disks() {
+  local m src
+  for m in / /boot /home "$HOME"; do
+    src="$(findmnt -no SOURCE --target "$m" 2>/dev/null | sed 's/\[.*//')"
+    [[ -b "$src" ]] && disk_of "$src"
+  done | sort -u
+}
+
+list_volumes() {
+  local sys dev type fs
+  sys="$(system_disks)"
+  lsblk -lpno NAME,TYPE | while read -r dev type; do
+    [[ "$type" == part || "$type" == disk || "$type" == crypt ]] || continue
+    fs="$(lsblk -dno FSTYPE "$dev")"
+    case "$fs" in ext2|ext3|ext4|btrfs|xfs|f2fs|exfat|vfat|ntfs|ntfs3) ;; *) continue ;; esac
+    [[ -n "$sys" ]] && grep -qxF "$(disk_of "$dev")" <<<"$sys" && continue
+    echo "$dev"
+  done
+}
+
+mount_volume() {
+  local dev="$1" mp fs opts=()
+  mp="$(mountpoint_of "$dev")"
+  if [[ -z "$mp" ]]; then
+    echo "Mounting $dev ..."
+    if udisksctl mount -b "$dev" >/dev/null 2>&1; then
+      MOUNTED_WITH_SUDO=0
+    else
+      echo "${YLW}udisksctl failed, trying with sudo mount...${RST}"
+      fs="$(lsblk -dno FSTYPE "$dev")"
+      case "$fs" in vfat|exfat|ntfs|ntfs3) opts=(-o "uid=$(id -u),gid=$(id -g)") ;; esac
+      mp="/mnt/$(basename "$dev")"
+      sudo mkdir -p "$mp" && sudo mount "${opts[@]}" "$dev" "$mp" || die "Cannot mount $dev"
+      MOUNTED_WITH_SUDO=1
+    fi
+    mp="$(mountpoint_of "$dev")"
+    [[ -n "$mp" ]] || die "$dev does not seem to be mounted"
+  fi
+  echo "${GRN}[OK]${RST} $dev mounted at $mp"
+  SELECTED_DEV="$dev"
+  SELECTED_DIR="$mp"
+}
+
+unmount_volume() {
+  local dev="$1"
+  sync
+  if [[ $MOUNTED_WITH_SUDO -eq 1 ]]; then sudo umount "$dev"
+  else udisksctl unmount -b "$dev"
+  fi && echo "${GRN}[OK]${RST} $dev unmounted: you can unplug it." || echo "${YLW}Could not unmount $dev${RST}"
+}
+
+choose_volume() {
+  local title="$1" vols v i c mp
+  SELECTED_DIR=""; SELECTED_DEV=""
+  while true; do
+    mapfile -t vols < <(list_volumes)
+    echo
+    echo "${BLU}==>${RST} $title"
+    if ((${#vols[@]})); then
+      i=1
+      for v in "${vols[@]}"; do
+        mp="$(mountpoint_of "$v")"
+        printf '  %d) %-22s %7s  %-6s  %-16s %s\n' "$i" "$v" "$(lsblk -dno SIZE "$v" | tr -d ' ')" \
+          "$(lsblk -dno FSTYPE "$v")" "$(lsblk -dno LABEL "$v")" "${mp:-(not mounted)}"
+        i=$((i+1))
+      done
+    else
+      echo "  ${YLW}No external disk found. Plug one in and choose r.${RST}"
+    fi
+    echo "  r) rescan"
+    echo "  p) enter a path manually"
+    echo "  q) quit"
+    read -rp "Choice: " c
+    case "$c" in
+      q) exit 0 ;;
+      r|"") continue ;;
+      p) read -rp "Path: " SELECTED_DIR
+         [[ -d "$SELECTED_DIR" ]] && return 0
+         echo "${RED}Not a directory: $SELECTED_DIR${RST}"; SELECTED_DIR="" ;;
+      *) if [[ "$c" =~ ^[0-9]+$ && $c -ge 1 && $c -le ${#vols[@]} ]]; then
+           mount_volume "${vols[$((c-1))]}"; return 0
+         fi
+         echo "${RED}Invalid choice${RST}" ;;
+    esac
+  done
+}
+
+is_verified() {
+  grep -qE 'BACKUP (COMPLETED AND VERIFIED|COMPLETATO E VERIFICATO)' "$1/backup.log" 2>/dev/null
+}
+
+choose_backup() {
+  local root="$1" backups b i=1 c tag
+  mapfile -t backups < <(find "$root" -maxdepth 2 -type d -name 'fedora-backup-*' 2>/dev/null \
+                         | while read -r b; do [[ -f "$b/home.tar.zst" ]] && echo "$b"; done | sort -r)
+  ((${#backups[@]})) || die "No backup (fedora-backup-*) found in $root"
+  echo
+  echo "${BLU}==>${RST} Backups found in $root"
+  for b in "${backups[@]}"; do
+    if is_verified "$b"; then tag="${GRN}[verified]${RST}"; else tag="${YLW}[not verified!]${RST}"; fi
+    echo "  $i) ${b#"$root/"}  $tag"
     i=$((i+1))
   done
-  read -rp "Which disk should the backup be saved to? [1] " c
+  read -rp "Which backup do you want to restore? [1] " c
   c="${c:-1}"
-  [[ "$c" =~ ^[0-9]+$ && $c -ge 1 && $c -le ${#disks[@]} ]] || die "Invalid choice" >&2
-  echo "${disks[$((c-1))]}"
+  [[ "$c" =~ ^[0-9]+$ && $c -ge 1 && $c -le ${#backups[@]} ]] || die "Invalid choice"
+  SELECTED_DIR="${backups[$((c-1))]}"
 }
 
 do_save() {
-  local dest="${1:-}"
-  if [[ -z "$dest" ]]; then
-    if [[ "$HERE" == /run/media/* ]]; then dest="$HERE"; else dest="$(pick_dest)" || exit 1; fi
-  fi
+  local dest="${1:-}" rc
   [[ -f "$HERE/backup.sh" ]]  || die "backup.sh not found in $HERE"
   [[ -f "$HERE/restore.sh" ]] || die "restore.sh not found in $HERE"
+  if [[ -z "$dest" ]]; then
+    choose_volume "Where should the backup be saved?"
+    dest="$SELECTED_DIR"
+  fi
+  [[ -d "$dest" ]] || die "Destination not found: $dest"
+  if [[ ! -w "$dest" ]]; then
+    echo "${YLW}$dest is not writable by $(id -un): creating $dest/backups owned by you.${RST}"
+    sudo install -d -o "$(id -u)" -g "$(id -g)" "$dest/backups" || die "Cannot create $dest/backups"
+    dest="$dest/backups"
+  fi
+  echo
   echo "${GRN}BACKUP${RST} of this system to: $dest"
-  read -rp "Include the Trash too (~10GB)? [y/N] " t
-  local extra=(); [[ "$t" =~ ^[sSyY]$ ]] && extra=(--include-trash)
-  exec bash "$HERE/backup.sh" "$dest" "${extra[@]}"
-}
-
-find_backup() {
-  [[ -f "$HERE/home.tar.zst" ]] && { echo "$HERE"; return; }
-  ls -1d "$HERE"/fedora-backup-*/ 2>/dev/null | sort | tail -1 | sed 's:/$::'
+  local extra=()
+  yes_no "Include the Trash too?" && extra=(--include-trash)
+  bash "$HERE/backup.sh" "$dest" "${extra[@]}"
+  rc=$?
+  if [[ -n "$SELECTED_DEV" ]] && yes_no "Unmount $SELECTED_DEV now?"; then unmount_volume "$SELECTED_DEV"; fi
+  exit $rc
 }
 
 do_restore() {
-  local dir="${1:-$(find_backup)}"
-  [[ -n "$dir" && -f "$dir/home.tar.zst" ]] || die "No backup found (searched in $HERE). Pass the path: bash $0 restore /path/fedora-backup-XXXX"
-  [[ -f "$dir/restore.sh" ]] || cp "$HERE/restore.sh" "$dir/" 2>/dev/null || die "restore.sh missing"
+  local dir="${1:-}" script
+  if [[ -z "$dir" && -f "$HERE/home.tar.zst" ]]; then
+    dir="$HERE"
+  elif [[ -z "$dir" ]]; then
+    choose_volume "Which disk contains the backup?"
+    choose_backup "$SELECTED_DIR"
+    dir="$SELECTED_DIR"
+  fi
+  dir="$(cd "$dir" 2>/dev/null && pwd)" || die "Backup folder not found"
+  [[ -f "$dir/home.tar.zst" ]] || die "$dir is not a backup folder (home.tar.zst missing)"
+  if [[ -f "$HERE/restore.sh" ]]; then script="$HERE/restore.sh"
+  elif [[ -f "$dir/restore.sh" ]]; then script="$dir/restore.sh"
+  else die "restore.sh missing"; fi
+  echo
   echo "${GRN}RESTORE${RST} from: $dir"
-  read -rp "Confirm? Files in the current home will be overwritten. [y/N] " a
-  [[ "$a" =~ ^[sSyY]$ ]] || exit 0
-  exec bash "$dir/restore.sh"
+  is_verified "$dir" || echo "${YLW}Warning: backup.log does not say the backup was verified.${RST}"
+  yes_no "Confirm? Files in the current home will be overwritten." || exit 0
+  exec bash "$script" "$dir"
+}
+
+do_mount() {
+  choose_volume "Which disk do you want to mount?"
+  echo "Mounted at: $SELECTED_DIR"
 }
 
 case "${1:-}" in
   save|backup)   shift; do_save "$@" ;;
   restore)       shift; do_restore "$@" ;;
+  mount)         do_mount ;;
   "")
     echo "=========================================="
     echo "  saveRestore — Fedora KDE migration"
     echo "=========================================="
-    b="$(find_backup)"
-    [[ -n "$b" ]] && echo "${YLW}Backup found:${RST} $b"
-    echo "  1) SAVE    — back up this system (old PC)"
-    echo "  2) RESTORE — from backup (fresh new system)"
+    [[ -f "$HERE/home.tar.zst" ]] && echo "${YLW}Running from inside a backup:${RST} $HERE"
+    echo "  1) SAVE    — back up this system to an external disk"
+    echo "  2) RESTORE — restore this system from a backup"
+    echo "  3) MOUNT   — just mount an external disk"
     echo "  q) quit"
     read -rp "Choice: " c
     case "$c" in
       1) do_save ;;
       2) do_restore ;;
+      3) do_mount ;;
       *) exit 0 ;;
     esac ;;
-  *) die "Usage: bash $0 [save [DEST] | restore [DIR]]" ;;
+  *) die "Usage: bash $0 [save [DEST] | restore [BACKUP_DIR] | mount]" ;;
 esac

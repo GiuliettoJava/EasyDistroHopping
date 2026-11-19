@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-B="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+B="$(cd "${1:-$(dirname "${BASH_SOURCE[0]}")}" && pwd)" || { echo "Backup folder not found: ${1:-}"; exit 1; }
 RED=$'\e[31m'; GRN=$'\e[32m'; YLW=$'\e[33m'; BLU=$'\e[34m'; RST=$'\e[0m'
 FAILED=()
 info() { echo; echo "${BLU}==>${RST} $*"; }
@@ -118,10 +118,10 @@ if [[ -s "$B/pkgs/pipx.txt" ]] && command -v pipx >/dev/null; then
   step "pipx reinstall-all" pipx reinstall-all
 fi
 
-info "[5/10] Flatpak"
+info "[5/10] Flatpak and Snap"
 step "flathub (system)" sudo flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 step "flathub (user)"   flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-tail -n +1 "$B/pkgs/flatpak-apps.tsv" | while IFS=$'\t' read -r app inst origin; do
+while IFS=$'\t' read -r app inst origin; do
   [[ -z "$app" || "$app" == "Application ID" ]] && continue
   scope="--system"; [[ "$inst" == "user" ]] && scope="--user"
   pre=""; [[ "$scope" == "--system" ]] && pre="sudo"
@@ -135,7 +135,28 @@ tail -n +1 "$B/pkgs/flatpak-apps.tsv" | while IFS=$'\t' read -r app inst origin;
       $pre flatpak install $scope -y --noninteractive "$bundle" && ok "flatpak $app (from $bundle)" || fail "flatpak $app from bundle"
     else fail "flatpak $app: .flatpak bundle not found"; fi
   fi
-done
+done < "$B/pkgs/flatpak-apps.tsv"
+
+SNAPLIST="$B/pkgs/snap-list.txt"
+if [[ -s "$SNAPLIST" ]]; then
+  rpm -q snapd >/dev/null 2>&1 || step "installing snapd" sudo dnf install -y snapd
+  [[ -e /snap ]] || sudo ln -s /var/lib/snapd/snap /snap
+  step "enabling snapd" sudo systemctl enable --now snapd.socket
+  sudo snap wait system seed.loaded >/dev/null 2>&1
+  while read -r name _ver _rev tracking _pub notes; do
+    [[ -z "$name" || "$name" == bare ]] && continue
+    [[ ",${notes:-}," =~ ,(base|core|snapd), ]] && continue
+    snap list "$name" >/dev/null 2>&1 && { ok "snap $name already installed"; continue; }
+    if [[ "$tracking" == "-" ]]; then fail "snap $name: installed from a local file, reinstall it manually"; continue; fi
+    args=(--channel="$tracking"); [[ ",${notes:-}," == *,classic,* ]] && args+=(--classic)
+    sudo snap install "$name" "${args[@]}" && ok "snap $name" || fail "snap $name"
+  done < <(tail -n +2 "$SNAPLIST")
+  if [[ -f "$B/system/snap-snapshot.export" ]]; then
+    SNAP_ID=$(sudo snap import-snapshot "$B/system/snap-snapshot.export" 2>/dev/null | grep -oE '#[0-9]+' | head -1 | tr -d '#')
+    if [[ -n "$SNAP_ID" ]]; then step "restoring snap data (snapshot #$SNAP_ID)" sudo snap restore "$SNAP_ID"
+    else fail "snap snapshot import"; fi
+  fi
+fi
 
 info "[6/10] KDE look & feel with konsave"
 export PATH="$HOME/.local/bin:$PATH"

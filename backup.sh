@@ -96,7 +96,7 @@ check_tar "critical files" "${PIPESTATUS[@]}"
 cp -a "$HOME_DIR/.ssh/config" "$B/critical/ssh_config.txt" 2>/dev/null
 ls -1 "$HOME_DIR/.claude/projects" > "$B/critical/claude-projects.txt" 2>/dev/null
 
-info "[2/7] Package lists (dnf, flatpak, pip, pipx, VS Code)"
+info "[2/7] Package lists (dnf, flatpak, snap, pip, pipx, VS Code)"
 P="$B/pkgs"
 dnf repoquery --userinstalled --qf '%{name}\n' 2>/dev/null | sort -u > "$P/dnf-userinstalled.txt"
 dnf repoquery --installed --qf '%{name} %{from_repo}\n' 2>/dev/null \
@@ -108,9 +108,14 @@ flatpak remotes --columns=name,url,options > "$P/flatpak-remotes.tsv" 2>/dev/nul
 pip list --user --format=freeze > "$P/pip-user.txt" 2>/dev/null
 command -v pipx >/dev/null && pipx list --short > "$P/pipx.txt" 2>/dev/null
 command -v code >/dev/null && code --list-extensions > "$P/vscode-extensions.txt" 2>/dev/null
-ok "dnf: $(wc -l < "$P/dnf-userinstalled.txt") user packages, $(wc -l < "$P/dnf-local-rpms.txt") local rpms; flatpak: $(($(wc -l < "$P/flatpak-apps.tsv"))) apps"
+SNAP_COUNT=0
+if command -v snap >/dev/null; then
+  snap list > "$P/snap-list.txt" 2>/dev/null
+  SNAP_COUNT=$(tail -n +2 "$P/snap-list.txt" 2>/dev/null | wc -l)
+fi
+ok "dnf: $(wc -l < "$P/dnf-userinstalled.txt") user packages, $(wc -l < "$P/dnf-local-rpms.txt") local rpms; flatpak: $(($(wc -l < "$P/flatpak-apps.tsv"))) apps; snap: $SNAP_COUNT"
 
-info "[3/7] System files (full /etc, GRUB theme, /opt, Wi-Fi/VPN)"
+info "[3/7] System files (full /etc, GRUB theme, /opt, Wi-Fi/VPN, Docker, snap data)"
 S="$B/system"
 sudo tar -C / -cpf - --xattrs --acls etc 2>>"$B/meta/tar-etc-warnings.log" | zstd -T0 -q -3 -o "$S/etc.tar.zst"
 check_tar "/etc" "${PIPESTATUS[@]}"
@@ -126,6 +131,16 @@ if sudo test -d /var/lib/docker/volumes; then
   docker volume ls > "$S/docker-volumes.txt" 2>/dev/null
   sudo tar -C /var/lib/docker -cpf - volumes 2>>"$B/meta/tar-docker-warnings.log" | zstd -T0 -q -3 -o "$S/docker-volumes.tar.zst"
   check_tar "Docker volumes" "${PIPESTATUS[@]}"
+fi
+if (( SNAP_COUNT > 0 )); then
+  SNAP_SET=$(sudo snap save 2>/dev/null | awk 'NR==2{print $1}')
+  if [[ -n "$SNAP_SET" ]] && sudo snap export-snapshot "$SNAP_SET" "$S/snap-snapshot.export" >/dev/null 2>&1; then
+    sudo chown "$(id -u):$(id -g)" "$S/snap-snapshot.export" 2>/dev/null
+    sudo snap forget "$SNAP_SET" >/dev/null 2>&1
+    ok "snap data snapshot (set $SNAP_SET)"
+  else
+    warn "snap data snapshot failed (snap list is saved anyway)"
+  fi
 fi
 crontab -l > "$S/crontab-user.txt" 2>/dev/null || true
 
