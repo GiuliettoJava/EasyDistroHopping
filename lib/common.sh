@@ -113,3 +113,40 @@ pm_pip_package() {
     *)      echo python3-pip ;;
   esac
 }
+
+AUR_HELPERS=(paru yay pikaur trizen)
+AUR_RPC="https://aur.archlinux.org/rpc/v5/info"
+
+detect_aur_helper() {
+  local h
+  for h in "${AUR_HELPERS[@]}"; do command -v "$h" >/dev/null && { echo "$h"; return 0; }; done
+  return 1
+}
+
+aur_flags() {
+  case "$1" in
+    paru)   echo "--needed --noconfirm --skipreview --removemake" ;;
+    yay)    echo "--needed --noconfirm --answerdiff None --answerclean None --answeredit None --removemake" ;;
+    pikaur) echo "--needed --noconfirm --noedit --nodiff" ;;
+    trizen) echo "--needed --noconfirm --noedit" ;;
+    *)      echo "--needed --noconfirm" ;;
+  esac
+}
+
+aur_filter_existing() {
+  local names=() n out
+  mapfile -t names
+  ((${#names[@]})) || return 0
+  command -v curl >/dev/null || return 1
+  local i args=() found=""
+  for ((i = 0; i < ${#names[@]}; i += 100)); do
+    args=()
+    for n in "${names[@]:i:100}"; do args+=(--data-urlencode "arg[]=$n"); done
+    out="$(curl -fsG --globoff --max-time 30 "$AUR_RPC" "${args[@]}")" || return 1
+    [[ "$out" == *'"type":"error"'* ]] && return 1
+    found+="$(grep -o '"Name":"[^"]*"' <<<"$out" | cut -d'"' -f4)"$'\n'
+  done
+  sed '/^$/d' <<<"$found" | sort -u
+}
+
+is_aur_helper_pkg() { [[ "$1" =~ ^(paru|yay|pikaur|trizen)(-bin|-git)?$ ]]; }

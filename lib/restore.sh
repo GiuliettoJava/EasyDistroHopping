@@ -24,12 +24,14 @@ OLD_PM="$(meta pm)";         OLD_PM="${OLD_PM:-dnf}"
 OLD_OS_ID="$(meta os_id)";   OLD_OS_ID="${OLD_OS_ID:-fedora}"
 OLD_OS_VERSION="$(meta os_version)"; OLD_OS_VERSION="${OLD_OS_VERSION:-$(meta fedora)}"
 OLD_CODENAME="$(meta os_codename)"
+OLD_AUR_HELPER="$(meta aur_helper)"
 NEW_OS_ID="$(os_field ID)"
 NEW_OS_VERSION="$(os_field VERSION_ID)"
 NEW_CODENAME="$(os_field VERSION_CODENAME)"
 
 PKG_EXPLICIT="$B/pkgs/packages-explicit.txt"; [[ -f "$PKG_EXPLICIT" ]] || PKG_EXPLICIT="$B/pkgs/dnf-userinstalled.txt"
 PKG_LOCAL="$B/pkgs/packages-local.txt";       [[ -f "$PKG_LOCAL" ]]    || PKG_LOCAL="$B/pkgs/dnf-local-rpms.txt"
+PKG_AUR="$B/pkgs/aur-packages.txt"
 
 if [[ "$(id -un)" != "$OLD_USER" || "$HOME" != "/home/$OLD_USER" ]]; then
   echo "${YLW}Current user: $(id -un) — backup user: $OLD_USER${RST}"
@@ -175,19 +177,39 @@ if [[ -d "$HOME/.ssh" ]]; then
 else fail "~/.ssh not found"; fi
 
 AUR_HELPER=""
-find_aur_helper() {
-  local h
-  for h in paru yay; do command -v "$h" >/dev/null && { AUR_HELPER="$h"; return 0; }; done
-  return 1
-}
 bootstrap_aur_helper() {
-  find_aur_helper && return 0
-  local d rc
+  AUR_HELPER="$(detect_aur_helper)" && return 0
+  local want="yay" d rc
+  [[ "$OLD_AUR_HELPER" == paru ]] && want="paru"
+  info "Installing the AUR helper $want (from ${want}-bin in the AUR)"
   pm_install base-devel git || return 1
   d="$(mktemp -d)"
-  git clone --depth 1 https://aur.archlinux.org/yay-bin.git "$d/yay-bin" && ( cd "$d/yay-bin" && makepkg -si --noconfirm )
+  git clone --depth 1 "https://aur.archlinux.org/${want}-bin.git" "$d/${want}-bin" \
+    && ( cd "$d/${want}-bin" && makepkg -si --noconfirm --needed )
   rc=$?; rm -rf "$d"
-  ((rc == 0)) && find_aur_helper
+  ((rc == 0)) && AUR_HELPER="$(detect_aur_helper)"
+}
+
+aur_install() {
+  local flags p
+  read -ra flags <<<"$(aur_flags "$AUR_HELPER")"
+  "$AUR_HELPER" -S "${flags[@]}" "$@"
+}
+
+install_aur_packages() {
+  local pkgs=("$@") p
+  ((${#pkgs[@]})) || return 0
+  if ! bootstrap_aur_helper; then
+    fail "AUR packages not installed (could not set up an AUR helper): ${pkgs[*]}"
+    return
+  fi
+  ok "AUR helper: $AUR_HELPER"
+  if aur_install "${pkgs[@]}"; then
+    ok "AUR packages (${#pkgs[@]})"
+  else
+    echo "Bulk AUR install failed, trying package by package..."
+    for p in "${pkgs[@]}"; do pm_is_installed "$p" || aur_install "$p" || fail "AUR: $p"; done
+  fi
 }
 
 install_from_list() {
@@ -211,31 +233,26 @@ install_from_list() {
 }
 
 install_local_packages() {
-  local ext p f aur=()
+  local ext p f aur=() in_aur
   ext="$(pm_local_ext)"
   while read -r p; do
     [[ -z "$p" || "$p" == rpmfusion-* ]] && continue
+    [[ "$PM" == pacman ]] && { [[ "$p" == *-debug ]] || is_aur_helper_pkg "$p"; } && continue
     pm_is_installed "$p" && { ok "$p already installed"; continue; }
     f=$(ls -t "$HOME"/Downloads/"$p"[-_]*."$ext" "$HOME"/Desktop/"$p"[-_]*."$ext" 2>/dev/null | head -1)
-    if [[ -n "$f" ]]; then
-      case "$PM" in
-        pacman) step "local package $p" sudo pacman -U --needed --noconfirm "$f" ;;
-        *)      step "local package $p" pm_install "$f" ;;
-      esac
-    elif [[ "$PM" == pacman ]]; then
-      aur+=("$p")
+    if [[ "$PM" == pacman ]]; then
+      in_aur=1
+      [[ -f "$PKG_AUR" ]] && ! grep -qxF "$p" "$PKG_AUR" && in_aur=0
+      if ((in_aur)); then aur+=("$p")
+      elif [[ -n "$f" ]]; then step "local package $p" sudo pacman -U --needed --noconfirm "$f"
+      else fail "foreign package $p: not in the AUR and no .$ext file in ~/Downloads or ~/Desktop"; fi
+    elif [[ -n "$f" ]]; then
+      step "local package $p" pm_install "$f"
     else
       fail "local package $p: .$ext file not found in ~/Downloads or ~/Desktop (download it from the vendor's site)"
     fi
   done < <(cat "$PKG_LOCAL" 2>/dev/null)
-  if ((${#aur[@]})); then
-    if bootstrap_aur_helper; then
-      if "$AUR_HELPER" -S --needed --noconfirm "${aur[@]}"; then ok "AUR packages via $AUR_HELPER (${#aur[@]})"
-      else for p in "${aur[@]}"; do pm_is_installed "$p" || "$AUR_HELPER" -S --needed --noconfirm "$p" || fail "AUR: $p"; done; fi
-    else
-      fail "AUR packages not installed (no AUR helper): ${aur[*]}"
-    fi
-  fi
+  [[ "$PM" == pacman ]] && install_aur_packages "${aur[@]}"
 }
 
 info "[4/10] Installing system packages ($PM)"
@@ -289,7 +306,7 @@ SNAPLIST="$B/pkgs/snap-list.txt"
 if [[ -s "$SNAPLIST" ]]; then
   if ! command -v snap >/dev/null; then
     if [[ "$PM" == pacman ]]; then
-      bootstrap_aur_helper && step "installing snapd (AUR)" "$AUR_HELPER" -S --needed --noconfirm snapd \
+      bootstrap_aur_helper && step "installing snapd (AUR)" aur_install snapd \
         || fail "snapd not installed: it is in the AUR and no AUR helper is available"
     else
       step "installing snapd" pm_install snapd

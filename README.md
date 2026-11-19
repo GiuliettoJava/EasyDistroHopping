@@ -30,8 +30,27 @@ Bash scripts to move an entire Linux system (files, programs, desktop look & fee
 | Explicitly installed packages | `dnf repoquery --userinstalled` | `apt-mark showmanual` | `pacman -Qqe` |
 | Packages from local files | RPMs installed from a file | `.deb` not available in any repo | foreign packages (AUR / local) `pacman -Qqm` |
 | Repositories restored | third-party `.repo` files + GPG keys, RPM Fusion (Fedora), COPR version fix | `sources.list.d` entries + keys (`/etc/apt/keyrings`, `trusted.gpg.d`, `/usr/share/keyrings`), codename updated (e.g. `bookworm` → `trixie`) | `[multilib]` enabled; other custom repos reported for manual setup |
-| Local packages reinstalled from | `~/Downloads`, `~/Desktop` (`*.rpm`) | `~/Downloads`, `~/Desktop` (`*.deb`) | `~/Downloads`, `~/Desktop` (`*.pkg.tar.zst`), otherwise from the **AUR** via `paru`/`yay` (`yay` is bootstrapped if missing) |
-| snapd | from the repos | from the repos | from the AUR |
+| Local packages reinstalled from | `~/Downloads`, `~/Desktop` (`*.rpm`) | `~/Downloads`, `~/Desktop` (`*.deb`) | the **AUR** (see below), or `~/Downloads`, `~/Desktop` (`*.pkg.tar.zst`) for packages that are not in the AUR |
+| snapd | from the repos | from the repos | from the AUR (with the AUR helper) |
+
+### AUR (Arch-based systems)
+
+**Backup**
+- Records which AUR helper you use (`paru`, `yay`, `pikaur` or `trizen`) in `meta/system-info.env`.
+- Saves all foreign packages with versions (`pkgs/foreign-versions.tsv`) and asks the [AUR RPC API](https://aur.archlinux.org/rpc) which of them really exist in the AUR:
+  - `pkgs/aur-packages.txt`: packages to reinstall from the AUR;
+  - `pkgs/foreign-not-in-aur.txt`: packages installed from a local file or a removed AUR package.
+  Only package names are sent. If the AUR can't be reached, every foreign package is treated as an AUR package.
+- Helper configs (`~/.config/paru`, `~/.config/yay`) are in the home archive; build caches (`~/.cache/yay`, `~/.cache/paru`) are excluded.
+
+**Restore**
+- If no AUR helper is installed, it installs `base-devel` and `git` and builds the same helper you used (`paru-bin`, otherwise `yay-bin`) from the AUR.
+- AUR packages are installed non-interactively (no diff/edit prompts, make dependencies removed), in bulk and then one at a time if the bulk install fails.
+- The helper itself and `*-debug` packages are skipped (the helper is reinstalled separately, debug packages are rebuilt automatically).
+- Packages not in the AUR are installed from a `*.pkg.tar.zst` file in `~/Downloads` / `~/Desktop` if there is one, otherwise reported.
+- PGP keys some AUR packages need for source verification are already available, because `~/.gnupg` is restored before packages are installed.
+
+> AUR packages are built from user-submitted PKGBUILDs. The restore installs them without showing the PKGBUILD, trusting the choices you made on the old system; review them afterwards with your helper if you want.
 
 **Different distribution on the new system?** If the backup was made with a different package manager (e.g. Fedora → Arch), the restore asks for confirmation and then **skips repositories and system packages** (names differ between distributions; the lists stay in `pkgs/` for reference). Home, settings, Flatpak, Snap, pip, network, system configs, Docker volumes etc. are still restored.
 
@@ -248,7 +267,7 @@ bash lib/restore.sh /run/media/$USER/<LABEL>/system-backup-XXXX
 | 1 | Repositories | third-party repos and keys for the detected package manager (see the table above), then refreshes the package database |
 | 2 | **Home** | extracts all your files (long part), then re-applies SSH/Claude from the safety copy, fixes ownership (and SELinux labels where enabled) |
 | 3 | **SSH** | fixes permissions (`~/.ssh` 700, keys 600) |
-| 4 | Packages | explicitly installed packages; packages from local files (`~/Downloads`, `~/Desktop`) or the AUR; pip `--user`, pipx |
+| 4 | Packages | explicitly installed packages; on Arch the AUR helper + AUR packages; packages from local files (`~/Downloads`, `~/Desktop`); pip `--user`, pipx |
 | 5 | Flatpak & Snap | installs flatpak/snapd if needed; flatpak apps from Flathub or `.flatpak` bundles; snaps on the same channel (classic when needed) + their data snapshot |
 | 6 | **Look & feel** | KDE → KDE: imports and applies the konsave `migrazione` profile; otherwise skipped (settings come from the home) |
 | 7 | Network | NetworkManager Wi-Fi and VPN connections with their passwords |
@@ -345,6 +364,7 @@ zstd -dc /run/media/$USER/<DISK>/system-backup-*/system/etc.tar.zst | sudo tar -
 | Cache (`~/.cache`) | rebuilt automatically |
 | System packages when changing distribution | names differ: see `pkgs/` |
 | Custom pacman repos other than `[multilib]` | reported; add them and their keys by hand |
+| Foreign packages that are neither in the AUR nor in `~/Downloads` | reported; see `pkgs/foreign-not-in-aur.txt` |
 | Snaps installed from a local `.snap` file | reinstall them manually |
 | Docker images / build cache | pull them again with `docker pull` / `docker compose build` |
 | Other partitions/disks | only your home and the system files listed above are backed up |

@@ -113,6 +113,19 @@ pm_list_explicit > "$P/packages-explicit.txt"
 pm_list_local    > "$P/packages-local.txt"
 pm_list_all      > "$P/packages-all.tsv"
 [[ "$PM" == dnf ]] && dnf copr list > "$P/copr.txt" 2>/dev/null
+AUR_HELPER=""; AUR_MSG=""
+if [[ "$PM" == pacman ]]; then
+  AUR_HELPER="$(detect_aur_helper)"
+  pacman -Qm 2>/dev/null | tr ' ' '\t' > "$P/foreign-versions.tsv"
+  if AUR_LIST="$(aur_filter_existing < "$P/packages-local.txt")"; then
+    printf '%s\n' "$AUR_LIST" | sed '/^$/d' > "$P/aur-packages.txt"
+    comm -23 "$P/packages-local.txt" "$P/aur-packages.txt" > "$P/foreign-not-in-aur.txt"
+    AUR_MSG="; AUR: $(wc -l < "$P/aur-packages.txt") packages, $(wc -l < "$P/foreign-not-in-aur.txt") foreign not in the AUR"
+  else
+    AUR_MSG="; AUR: could not reach aur.archlinux.org, all $(wc -l < "$P/packages-local.txt") foreign packages will be treated as AUR packages"
+  fi
+  AUR_MSG+=" (helper: ${AUR_HELPER:-none})"
+fi
 flatpak list --app --columns=application,installation,origin > "$P/flatpak-apps.tsv" 2>/dev/null
 flatpak remotes --columns=name,url,options > "$P/flatpak-remotes.tsv" 2>/dev/null
 pip list --user --format=freeze > "$P/pip-user.txt" 2>/dev/null
@@ -123,7 +136,7 @@ if command -v snap >/dev/null; then
   snap list > "$P/snap-list.txt" 2>/dev/null
   SNAP_COUNT=$(tail -n +2 "$P/snap-list.txt" 2>/dev/null | wc -l)
 fi
-ok "$PM: $(wc -l < "$P/packages-explicit.txt") explicitly installed, $(wc -l < "$P/packages-local.txt") from local files/AUR; flatpak: $(($(wc -l < "$P/flatpak-apps.tsv"))) apps; snap: $SNAP_COUNT"
+ok "$PM: $(wc -l < "$P/packages-explicit.txt") explicitly installed, $(wc -l < "$P/packages-local.txt") from local files/AUR; flatpak: $(($(wc -l < "$P/flatpak-apps.tsv"))) apps; snap: $SNAP_COUNT$AUR_MSG"
 
 info "[3/7] System files (full /etc, GRUB theme, /opt, Wi-Fi/VPN, Docker, snap data)"
 S="$B/system"
@@ -170,6 +183,7 @@ M="$B/meta"
   echo "os_version=$(os_field VERSION_ID)"
   echo "os_codename=$(os_field VERSION_CODENAME)"
   echo "pm=$PM"
+  echo "aur_helper=$AUR_HELPER"
   echo "de=$DE"
   echo "date=$(date -Is)"
 } > "$M/system-info.env"
