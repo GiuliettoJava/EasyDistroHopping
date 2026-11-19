@@ -1,6 +1,37 @@
 # Linux system backup & restore
 
-Bash scripts to move an entire Linux system (files, programs, desktop look & feel, SSH, Claude Code chats, Wi-Fi) from an old install to a fresh one.
+A **personal tool** I wrote to swap the SSD of my laptop when copying the partition straight to the new drive wasn't an option. Instead of cloning the disk, it saves everything that matters to an external disk, and after a clean install it rebuilds the system on the new SSD: files, programs, desktop look & feel, SSH keys, Claude Code chats, Wi-Fi.
+
+It's shared as-is in case it's useful to someone else in the same situation. Read the scripts before running them on your machine.
+
+## Where it was used and tested
+
+| | |
+|---|---|
+| Machine | Lenovo ThinkPad T470 (Intel Core i5-6300U, Intel HD Graphics 520, 16 GB RAM) |
+| New SSD | Intel SSDPEKKF256G8L 256 GB NVMe, btrfs |
+| System | Fedora 44 KDE Plasma 6 → fresh Fedora 44 KDE Plasma 6 |
+| Real migration | November 2026: backup to a USB stick (exFAT), clean install on the new SSD, restore from a TTY. All 10 restore steps completed; the only failure was one locally installed RPM (MongoDB Compass) that conflicted with another package and had to be installed by hand. |
+
+That migration was done with the first, Fedora-only version of the scripts. The current version was then generalized:
+- on the same machine, the Fedora/`dnf` code paths were checked;
+- the `apt` (Debian 13) and `pacman` (Arch) package functions, including AUR helper bootstrap and AUR installs, were tested in containers.
+
+A full backup → restore cycle on Debian/Ubuntu or Arch, and on desktops other than KDE, **has not been done yet**.
+
+## Credits
+
+The KDE look & feel is saved and restored with **[konsave](https://github.com/Prayag2/konsave)** by **Prayag Jain** ([@Prayag2](https://github.com/Prayag2)), GPL-3.0. Thanks for a tool that turns a whole Plasma setup into one portable file: it's what made moving the desktop exactly as it was possible. konsave is installed with pip and called by these scripts; none of its code is included here.
+
+## License
+
+Copyright (C) 2026 GiuliettoJava. Released under the **[GNU General Public License v3.0](LICENSE)** (GPL-3.0): anyone can use, study, share and modify it, also commercially. If you distribute it or a modified version, it must stay under the GPL-3.0 and include its source code. It comes **without any warranty**: you're moving your whole system, so check the backup before wiping the old disk.
+
+Tools the scripts install and call at runtime keep their own licenses (e.g. konsave is GPL-3.0).
+
+---
+
+## Features
 
 - **Distributions**: Fedora / RHEL-based (`dnf`), Debian / Ubuntu-based (`apt`), Arch-based (`pacman`, with AUR support). The package manager is detected automatically.
 - **Desktops**: any. KDE Plasma gets extra handling (konsave, KWallet), skipped automatically on other desktops.
@@ -372,3 +403,4 @@ zstd -dc /run/media/$USER/<DISK>/system-backup-*/system/etc.tar.zst | sudo tar -
 > 🔒 Keep the old disk untouched until you have verified everything in step 8.
 
 Backups made by older versions of these scripts (`fedora-backup-*` folders, Fedora only) are still recognized and can be restored.
+
