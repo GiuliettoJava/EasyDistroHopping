@@ -22,8 +22,11 @@ DEST_ROOT="$(realpath "$DEST_ROOT")"
 USER_NAME="$(id -un)"
 HOME_DIR="$HOME"
 STAMP="$(date +%Y%m%d-%H%M)"
-B="$DEST_ROOT/fedora-backup-$STAMP"
+B="$DEST_ROOT/system-backup-$STAMP"
 DE="$(detect_de)"
+command -v zstd >/dev/null || die "zstd is required: install the 'zstd' package and run again."
+[[ "$PM" != unknown ]] || die "Unsupported package manager: dnf (Fedora/RHEL), apt (Debian/Ubuntu) or pacman (Arch) is required."
+OS_ID="$(os_field ID)"; OS_NAME="$(os_field PRETTY_NAME)"
 IS_KDE=0; [[ "$DE" == kde ]] && IS_KDE=1
 
 FSTYPE="$(findmnt -no FSTYPE --target "$DEST_ROOT")"
@@ -31,6 +34,7 @@ case "$FSTYPE" in
   vfat|msdos) die "Destination is FAT32: it does not support files >4GB. Format the disk as ext4, btrfs or exFAT." ;;
 esac
 info "Destination filesystem: $FSTYPE"
+info "System: ${OS_NAME:-$OS_ID}  |  package manager: $PM"
 info "Desktop environment: $DE$( ((IS_KDE)) || echo ' (KDE-specific steps will be skipped)')"
 if [[ "$(findmnt -no SOURCE --target "$DEST_ROOT" | sed 's/\[.*//')" == "$(findmnt -no SOURCE --target "$HOME" | sed 's/\[.*//')" ]]; then
   die "Destination '$DEST_ROOT' is on the same disk as your home! Use the external USB stick/disk (e.g. /run/media/$(id -un)/<DISK>)."
@@ -45,7 +49,7 @@ EXCLUDES=(
 ((IS_KDE)) && EXCLUDES+=("$USER_NAME/.local/share/baloo")
 [[ $INCLUDE_TRASH -eq 1 ]] || EXCLUDES+=("$USER_NAME/.local/share/Trash")
 case "$DEST_ROOT/" in
-  "$HOME_DIR/"*) EXCLUDES+=("$USER_NAME/${DEST_ROOT#"$HOME_DIR/"}/fedora-backup-*") ;;
+  "$HOME_DIR/"*) for g in "${BACKUP_GLOBS[@]}"; do EXCLUDES+=("$USER_NAME/${DEST_ROOT#"$HOME_DIR/"}/$g"); done ;;
 esac
 
 info "Calculating size of the data to back up (may take a minute)..."
@@ -103,13 +107,12 @@ check_tar "critical files" "${PIPESTATUS[@]}"
 cp -a "$HOME_DIR/.ssh/config" "$B/critical/ssh_config.txt" 2>/dev/null
 ls -1 "$HOME_DIR/.claude/projects" > "$B/critical/claude-projects.txt" 2>/dev/null
 
-info "[2/7] Package lists (dnf, flatpak, snap, pip, pipx, VS Code)"
+info "[2/7] Package lists ($PM, flatpak, snap, pip, pipx, VS Code)"
 P="$B/pkgs"
-dnf repoquery --userinstalled --qf '%{name}\n' 2>/dev/null | sort -u > "$P/dnf-userinstalled.txt"
-dnf repoquery --installed --qf '%{name} %{from_repo}\n' 2>/dev/null \
-  | awk '$2=="@commandline" || $2=="<unknown>" {print $1}' | sort -u > "$P/dnf-local-rpms.txt"
-rpm -qa --qf '%{NAME}\t%{VERSION}-%{RELEASE}\t%{ARCH}\n' | sort > "$P/rpm-all-installed.tsv"
-dnf copr list > "$P/copr.txt" 2>/dev/null
+pm_list_explicit > "$P/packages-explicit.txt"
+pm_list_local    > "$P/packages-local.txt"
+pm_list_all      > "$P/packages-all.tsv"
+[[ "$PM" == dnf ]] && dnf copr list > "$P/copr.txt" 2>/dev/null
 flatpak list --app --columns=application,installation,origin > "$P/flatpak-apps.tsv" 2>/dev/null
 flatpak remotes --columns=name,url,options > "$P/flatpak-remotes.tsv" 2>/dev/null
 pip list --user --format=freeze > "$P/pip-user.txt" 2>/dev/null
@@ -120,15 +123,22 @@ if command -v snap >/dev/null; then
   snap list > "$P/snap-list.txt" 2>/dev/null
   SNAP_COUNT=$(tail -n +2 "$P/snap-list.txt" 2>/dev/null | wc -l)
 fi
-ok "dnf: $(wc -l < "$P/dnf-userinstalled.txt") user packages, $(wc -l < "$P/dnf-local-rpms.txt") local rpms; flatpak: $(($(wc -l < "$P/flatpak-apps.tsv"))) apps; snap: $SNAP_COUNT"
+ok "$PM: $(wc -l < "$P/packages-explicit.txt") explicitly installed, $(wc -l < "$P/packages-local.txt") from local files/AUR; flatpak: $(($(wc -l < "$P/flatpak-apps.tsv"))) apps; snap: $SNAP_COUNT"
 
 info "[3/7] System files (full /etc, GRUB theme, /opt, Wi-Fi/VPN, Docker, snap data)"
 S="$B/system"
 sudo tar -C / -cpf - --xattrs --acls etc 2>>"$B/meta/tar-etc-warnings.log" | zstd -T0 -q -3 -o "$S/etc.tar.zst"
 check_tar "/etc" "${PIPESTATUS[@]}"
-if sudo test -d /boot/grub2/themes; then
-  sudo tar -C /boot/grub2 -cpf - themes | zstd -T0 -q -o "$S/grub-themes.tar.zst"
-  check_tar "GRUB theme" "${PIPESTATUS[@]}"
+for g in grub2 grub; do
+  if sudo test -d "/boot/$g/themes"; then
+    sudo tar -C /boot -cpf - "$g/themes" | zstd -T0 -q -o "$S/grub-themes.tar.zst"
+    check_tar "GRUB theme (/boot/$g/themes)" "${PIPESTATUS[@]}"
+    break
+  fi
+done
+if [[ "$PM" == apt && -d /usr/share/keyrings ]]; then
+  sudo tar -C / -cpf - usr/share/keyrings 2>/dev/null | zstd -T0 -q -o "$S/usr-share-keyrings.tar.zst"
+  check_tar "apt keyrings (/usr/share/keyrings)" "${PIPESTATUS[@]}"
 fi
 sudo tar -C / -cpf - --exclude=opt/containerd opt 2>>"$B/meta/tar-opt-warnings.log" | zstd -T0 -q -3 -o "$S/opt.tar.zst"
 check_tar "/opt" "${PIPESTATUS[@]}"
@@ -155,8 +165,11 @@ info "[4/7] System information"
 M="$B/meta"
 {
   echo "user=$USER_NAME"; echo "uid=$(id -u)"; echo "groups=$(id -Gn)"
-  echo "hostname=$(hostnamectl hostname)"
-  echo "fedora=$(rpm -E %fedora)"
+  echo "hostname=$(hostnamectl --static 2>/dev/null || cat /etc/hostname)"
+  echo "os_id=$OS_ID"
+  echo "os_version=$(os_field VERSION_ID)"
+  echo "os_codename=$(os_field VERSION_CODENAME)"
+  echo "pm=$PM"
   echo "de=$DE"
   echo "date=$(date -Is)"
 } > "$M/system-info.env"

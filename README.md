@@ -1,6 +1,9 @@
-# Fedora backup & restore
+# Linux system backup & restore
 
-Bash scripts to move an entire Fedora system (files, programs, desktop look & feel, SSH, Claude Code chats, Wi-Fi) from an old install to a fresh one. They work with any desktop environment; KDE Plasma gets extra handling (konsave, KWallet), which is skipped automatically on other desktops.
+Bash scripts to move an entire Linux system (files, programs, desktop look & feel, SSH, Claude Code chats, Wi-Fi) from an old install to a fresh one.
+
+- **Distributions**: Fedora / RHEL-based (`dnf`), Debian / Ubuntu-based (`apt`), Arch-based (`pacman`, with AUR support). The package manager is detected automatically.
+- **Desktops**: any. KDE Plasma gets extra handling (konsave, KWallet), skipped automatically on other desktops.
 
 **`migrate.sh` is the only script you need to launch**: it lets you pick the external disk, mounts it, and then runs the backup or the restore.
 
@@ -10,13 +13,31 @@ Bash scripts to move an entire Fedora system (files, programs, desktop look & fe
 ├── lib/
 │   ├── backup.sh     ← does the backup   (called by migrate.sh)
 │   ├── restore.sh    ← does the restore  (called by migrate.sh)
-│   └── common.sh     ← shared helpers: colors, prompts, desktop detection
+│   └── common.sh     ← shared helpers: prompts, distro / package manager / desktop detection
 └── README.md
 ```
 
-### Desktop environment detection
+**Requirements**: `bash`, `sudo`, `tar`, `zstd` (installed automatically on restore if missing), `udisks2` for automatic mounting (otherwise `sudo mount` is used). `pv` is optional (progress bars).
 
-`lib/common.sh` detects the desktop from `XDG_CURRENT_DESKTOP` / `DESKTOP_SESSION`, or (e.g. from a TTY) from the installed session binaries: KDE, GNOME, Xfce, Cinnamon, MATE, LXQt, Budgie. The result is shown in the menu and saved in the backup (`meta/system-info.env`, `de=`).
+---
+
+## Package manager detection
+
+`lib/common.sh` picks the first one available: `dnf` → `apt` → `pacman`. The distribution, its version/codename and the package manager are saved in the backup (`meta/system-info.env`).
+
+| | dnf (Fedora/RHEL) | apt (Debian/Ubuntu) | pacman (Arch) |
+|---|---|---|---|
+| Explicitly installed packages | `dnf repoquery --userinstalled` | `apt-mark showmanual` | `pacman -Qqe` |
+| Packages from local files | RPMs installed from a file | `.deb` not available in any repo | foreign packages (AUR / local) `pacman -Qqm` |
+| Repositories restored | third-party `.repo` files + GPG keys, RPM Fusion (Fedora), COPR version fix | `sources.list.d` entries + keys (`/etc/apt/keyrings`, `trusted.gpg.d`, `/usr/share/keyrings`), codename updated (e.g. `bookworm` → `trixie`) | `[multilib]` enabled; other custom repos reported for manual setup |
+| Local packages reinstalled from | `~/Downloads`, `~/Desktop` (`*.rpm`) | `~/Downloads`, `~/Desktop` (`*.deb`) | `~/Downloads`, `~/Desktop` (`*.pkg.tar.zst`), otherwise from the **AUR** via `paru`/`yay` (`yay` is bootstrapped if missing) |
+| snapd | from the repos | from the repos | from the AUR |
+
+**Different distribution on the new system?** If the backup was made with a different package manager (e.g. Fedora → Arch), the restore asks for confirmation and then **skips repositories and system packages** (names differ between distributions; the lists stay in `pkgs/` for reference). Home, settings, Flatpak, Snap, pip, network, system configs, Docker volumes etc. are still restored.
+
+## Desktop environment detection
+
+The desktop is detected from `XDG_CURRENT_DESKTOP` / `DESKTOP_SESSION`, or (e.g. from a TTY) from the installed session binaries: KDE, GNOME, Xfce, Cinnamon, MATE, LXQt, Budgie.
 
 | | KDE | Other desktops |
 |---|---|---|
@@ -27,7 +48,9 @@ Bash scripts to move an entire Fedora system (files, programs, desktop look & fe
 
 On every desktop the settings themselves are restored with the home archive (`~/.config`, `~/.local/share`, ...).
 
-### Usage
+---
+
+## Usage
 
 Keep `migrate.sh` and `lib/` together (a clone of this repo, or the copy inside a backup folder), then:
 
@@ -52,7 +75,7 @@ Without arguments, `save` and `restore` show the **disk picker**:
 - Only partitions with a usable filesystem (ext4, btrfs, xfs, f2fs, exFAT, FAT, NTFS, unlocked LUKS) are listed; the disk(s) holding `/`, `/boot` and `/home` are hidden.
 - If the chosen disk is not mounted, it is mounted with `udisksctl mount` (falling back to `sudo mount` under `/mnt`).
 - **save**: if the disk root is not writable by your user (e.g. a fresh ext4 disk), a `backups/` folder owned by you is created on it. At the end it offers to unmount the disk.
-- **restore**: lists the `fedora-backup-*` folders found on the disk (newest first), marking whether each one finished as *verified*. If `migrate.sh` is run from inside a backup folder, that backup is used directly.
+- **restore**: lists the `system-backup-*` folders found on the disk (newest first), marking whether each one finished as *verified*. If `migrate.sh` is run from inside a backup folder, that backup is used directly.
 
 The restore always uses `lib/restore.sh` next to `migrate.sh`, falling back to the copy inside the backup.
 
@@ -64,7 +87,9 @@ udisksctl mount -b /dev/sdX1          # mounted at /run/media/$USER/<LABEL>
 udisksctl unmount -b /dev/sdX1
 ```
 
-### Making the backup (old PC)
+---
+
+## Making the backup (old PC)
 
 - Run it from a terminal as your **normal user, not with sudo**: it asks for the sudo password once at the start and keeps it alive until the end.
 - **Close** browsers (Opera, Chrome, Firefox), Discord, Spotify, VS Code, Postman and GitKraken first, so their profiles are saved in a consistent state. The script warns you if any of them is still running.
@@ -78,11 +103,11 @@ udisksctl unmount -b /dev/sdX1
 | `critical/critical.tar.zst` | a separate, redundant copy of SSH, GnuPG, Claude Code, GNOME Keyring, git/gh config, shell rc files, DBeaver, FileZilla, PuTTY, MongoDB, plus KWallet and konsave config on KDE — still safe even if the big archive has problems |
 | `critical/*.knsv` | **KDE only**: konsave profile `migrazione` (current KDE look & feel) and, if present, the older `plasma6_backup` profile |
 | `home.tar.zst` | the whole home, with permissions, xattrs and ACLs |
-| `pkgs/` | user-installed dnf packages, RPMs installed from local files, COPR repos, flatpak apps and remotes, snap list, pip `--user`, pipx, VS Code extensions |
-| `system/` | full `/etc` (includes Wi-Fi/VPN connections with passwords, repos, sysctl, GRUB config, sudoers), GRUB themes, `/opt` (except containerd), `/usr/local`, Docker volumes, snap data snapshot (`snap save` + `snap export-snapshot`), user crontab |
-| `meta/` | user/uid/groups, hostname, Fedora version, locale, disks, fstab, enabled systemd units, network connections, hardware |
+| `pkgs/` | `packages-explicit.txt`, `packages-local.txt`, `packages-all.tsv` (with versions), COPR repos (dnf), flatpak apps and remotes, snap list, pip `--user`, pipx, VS Code extensions |
+| `system/` | full `/etc` (includes Wi-Fi/VPN connections with passwords, repos, sysctl, GRUB config, sudoers), GRUB themes (`/boot/grub2` or `/boot/grub`), `/usr/share/keyrings` (apt), `/opt` (except containerd), `/usr/local`, Docker volumes, snap data snapshot (`snap save` + `snap export-snapshot`), user crontab |
+| `meta/` | user/uid/groups, hostname, distribution + version + codename, package manager, desktop, locale, disks, fstab, enabled systemd units, network connections, hardware |
 
-Excluded from the home archive, because they are regenerated or reinstalled: `~/.cache`, the Baloo search index (KDE), user flatpak installations (`~/.local/share/flatpak`), flatpak app caches, and the Trash (unless `--include-trash` or `y` in the menu). If the destination is inside the home, previous backups are excluded too.
+Excluded from the home archive, because they are regenerated or reinstalled: `~/.cache`, the Baloo search index (KDE), user flatpak installations (`~/.local/share/flatpak`), flatpak app caches, and the Trash (unless you answer `y` to the Trash question). If the destination is inside the home, previous backups are excluded too.
 
 At the end every archive is test-extracted, the presence of the essentials (SSH key and config, Claude Code projects, konsave profile on KDE) is checked, the scripts and this README are copied into the backup folder (so the disk alone is enough on the new PC) and a `SHA256SUMS` file is written.
 
@@ -96,20 +121,20 @@ The rest of this document is the **restore guide**.
 
 | What | Details |
 |---|---|
-| **Backup USB stick/disk** | contains the `fedora-backup-YYYYMMDD-HHMM/` folder |
+| **Backup USB stick/disk** | contains the `system-backup-YYYYMMDD-HHMM/` folder |
 | **Another USB stick** for the installer | ≥ 4 GB, it will be wiped. **Do not use the backup one!** |
-| Fedora 44 ISO | the edition you want, e.g. `Fedora-KDE-Desktop-Live-44-1.7.x86_64.iso` (to keep the KDE look & feel, install KDE again) |
+| Installer ISO | of the distribution you want (to keep the KDE look & feel, pick a KDE edition again) |
 | Internet connection | wired is easier: Wi-Fi is only restored later |
 
 The backup folder must contain:
 
 ```
-fedora-backup-XXXX/
+system-backup-XXXX/
 ├── home.tar.zst          ← the whole home
 ├── critical/             ← SSH, Claude Code, wallets (+ konsave profile on KDE)
-├── pkgs/                 ← dnf, flatpak, snap, pip package lists
+├── pkgs/                 ← package lists (system, flatpak, snap, pip...)
 ├── system/               ← /etc, GRUB theme, /opt, Docker volumes, snap data
-├── meta/                 ← info about the old system (incl. desktop environment)
+├── meta/                 ← info about the old system (distro, package manager, desktop...)
 ├── migrate.sh            ← launcher menu
 ├── lib/                  ← backup.sh, restore.sh, common.sh
 ├── README.md
@@ -118,11 +143,13 @@ fedora-backup-XXXX/
 ```
 
 > ⚠️ First of all, open `backup.log` and check that it ends with **"BACKUP COMPLETED AND VERIFIED"**.
-> If it doesn't, **do not wipe the old SSD**.
+> If it doesn't, **do not wipe the old disk**.
 
 ---
 
 ## 1. Prepare the installer USB stick (from the old PC)
+
+Download the ISO of your distribution and **verify its checksum** against the one published on the official site, e.g. for Fedora 44 KDE:
 
 ```bash
 cd ~/Downloads
@@ -130,14 +157,14 @@ curl -LO https://download.fedoraproject.org/pub/fedora/linux/releases/44/KDE/x86
 echo "c8295961d4c41adbf785a31a17c21a971d3b7415fda72dcad0c11c49577bf03a  Fedora-KDE-Desktop-Live-44-1.7.x86_64.iso" | sha256sum -c
 ```
 
-It must print `OK`. (This is the KDE edition; pick the ISO of your desktop's edition from getfedora.org if you use another one.) Then write it to the **second** USB stick with balenaEtcher or Fedora Media Writer.
+It must print `OK`. Then write it to the **second** USB stick with balenaEtcher, Fedora Media Writer, Ventoy or `dd`.
 
 ---
 
-## 2. Install Fedora
+## 2. Install the new system
 
-1. Power off, remove the old SSD (**keep it aside, do not format it**), install the new one.
-2. Boot from the installer USB stick and install Fedora.
+1. Power off, remove the old disk (**keep it aside, do not format it**), install the new one.
+2. Boot from the installer USB stick and install the system.
 3. During installation, **very important**:
    - username: **the same as on the old system** (exactly)
    - password: **the same as on the old system**
@@ -147,7 +174,8 @@ It must print `OK`. (This is the KDE edition; pick the ISO of your desktop's edi
    | same user | Claude Code chats are tied to the `/home/<user>/...` path |
    | same password | KWallet / GNOME Keyring (saved browser and Wi-Fi passwords) is unlocked at login |
 
-4. Reboot, log in for the first time and connect to the internet.
+4. Make sure your user can use `sudo` (on Debian, if you set a root password during install: `su -c "usermod -aG sudo $USER"` and log in again).
+5. Reboot, log in for the first time and connect to the internet.
 
 ---
 
@@ -156,7 +184,9 @@ It must print `OK`. (This is the KDE edition; pick the ISO of your desktop's edi
 The ISO may be a few months old, so it's best to update before restoring:
 
 ```bash
-sudo dnf upgrade --refresh -y
+sudo dnf upgrade --refresh -y                         # Fedora / RHEL
+sudo apt update && sudo apt full-upgrade -y           # Debian / Ubuntu
+sudo pacman -Syu                                      # Arch
 sudo reboot
 ```
 
@@ -176,7 +206,7 @@ The restore must run **without a desktop session running**, otherwise the deskto
 
 You need `migrate.sh` and the `lib/` folder. Either:
 
-- **from this repository** (needs internet):
+- **from this repository** (needs internet and `git`):
   ```bash
   git clone https://github.com/<you>/<repo>.git ~/backup-scripts
   cd ~/backup-scripts
@@ -185,8 +215,9 @@ You need `migrate.sh` and the `lib/` folder. Either:
   ```bash
   lsblk -o NAME,SIZE,FSTYPE,LABEL     # find your disk, e.g. sdb1
   udisksctl mount -b /dev/sdb1         # mounted at /run/media/$USER/<LABEL>
-  cd /run/media/$USER/<LABEL>/fedora-backup-*/
+  cd /run/media/$USER/<LABEL>/system-backup-*/
   ```
+  (No `udisksctl`? `sudo mkdir -p /mnt/backup && sudo mount /dev/sdb1 /mnt/backup`.)
 
 ---
 
@@ -206,38 +237,37 @@ bash migrate.sh
 Alternative without the menu:
 
 ```bash
-bash lib/restore.sh /run/media/$USER/<LABEL>/fedora-backup-XXXX
+bash lib/restore.sh /run/media/$USER/<LABEL>/system-backup-XXXX
 ```
 
 ### What the script does, in order
 
 | # | Step | Details |
 |---|---|---|
-| — | Checksum verification | if something doesn't match it asks whether to continue |
-| 1 | Repositories | RPM Fusion, Chrome, VS Code, Docker, Opera, MongoDB, COPR |
-| 2 | **Home** | extracts all your files (long part), then re-applies SSH/Claude from the safety copy |
+| — | Checks | checksums, same user, same package manager, no desktop session running (asks before continuing) |
+| 1 | Repositories | third-party repos and keys for the detected package manager (see the table above), then refreshes the package database |
+| 2 | **Home** | extracts all your files (long part), then re-applies SSH/Claude from the safety copy, fixes ownership (and SELinux labels where enabled) |
 | 3 | **SSH** | fixes permissions (`~/.ssh` 700, keys 600) |
-| 4 | Packages | user-installed dnf packages, manual RPMs (DBeaver, Compass, Etcher, GitKraken) from `~/Downloads`, pip/pipx |
-| 5 | Flatpak & Snap | flatpak apps from Flathub or from `.flatpak` bundle files; snapd + snaps on the same channel (classic when needed) + their data snapshot |
+| 4 | Packages | explicitly installed packages; packages from local files (`~/Downloads`, `~/Desktop`) or the AUR; pip `--user`, pipx |
+| 5 | Flatpak & Snap | installs flatpak/snapd if needed; flatpak apps from Flathub or `.flatpak` bundles; snaps on the same channel (classic when needed) + their data snapshot |
 | 6 | **Look & feel** | KDE → KDE: imports and applies the konsave `migrazione` profile; otherwise skipped (settings come from the home) |
-| 7 | Network | Wi-Fi and VPN connections with their passwords |
-| 8 | System | sysctl, udev, sudoers, `/etc/hosts`, manually installed apps in `/opt` (e.g. Postman), hostname |
-| 9 | GRUB | GRUB theme + regenerates `grub.cfg` |
+| 7 | Network | NetworkManager Wi-Fi and VPN connections with their passwords |
+| 8 | System | sysctl, udev, sudoers, `/etc/hosts`, manually installed apps in `/opt`, `/usr/local`, hostname, crontab |
+| 9 | GRUB | GRUB theme into `/boot/grub2` or `/boot/grub` + regenerates `grub.cfg` (skipped with other bootloaders) |
 | 10 | Docker | `docker`/`input` groups, enables Docker, restores Docker volumes |
 
 The script **does not stop on individual errors**: it keeps going and prints the list of what failed at the end. The full log is saved to `~/restore-YYYYMMDD-HHMM.log`.
 
 **Details worth knowing**
 
-- If your current user differs from the backup's user, or a desktop session (Plasma, GNOME Shell, Xfce, ...) is running, it asks before continuing.
 - The old `/etc` is extracted to a temporary folder and **only the needed pieces** are copied over; existing files on the new system are never overwritten.
 - Before extracting the home, the fresh system's `.config` and `.local` are saved to `~/.home-fresh-before-restore.tar.zst`.
-- Third-party repos and their GPG keys are copied from the old `/etc`; if the Fedora version changed, COPR repo version numbers are updated.
-- dnf packages are installed in bulk, skipping ones that no longer exist; if that fails, it retries one package at a time. Kernel packages and `gpg-pubkey` are skipped.
-- RPMs that were installed from local files are looked up in the restored `~/Downloads` and `~/Desktop`; flatpaks not from Flathub are looked up as `.flatpak` bundles in the same places.
+- Packages that don't exist in the new system's repositories are skipped and listed in a single line; the rest is installed in bulk (one at a time if the bulk install fails). Kernel packages are skipped.
+- apt: official Debian/Ubuntu sources are left to the new install; only third-party sources are copied.
+- pip: on distributions that block `pip install --user` (PEP 668, e.g. Debian 12+, Arch), it retries with `--break-system-packages`.
 - `sudoers.d` files are validated with `visudo` before being copied; custom `/etc/hosts` lines are appended; `/opt` folders are restored only if no package recreated them.
-- Snap: installs `snapd`, creates the `/snap` symlink (needed by classic snaps), enables `snapd.socket`, installs each snap from its old tracking channel (base/core snaps are pulled in automatically), then imports and restores the data snapshot.
-- VPN connections may need their NetworkManager plugin (openvpn, wireguard...), which is installed only if it was in the dnf package list.
+- Snap: creates the `/snap` symlink (needed by classic snaps), enables `snapd.socket`, installs each snap from its old tracking channel (base/core snaps are pulled in automatically), then imports and restores the data snapshot.
+- VPN connections may need their NetworkManager plugin (openvpn, wireguard...), which is installed only if it was in the package list.
 - The original GRUB config is saved as `/etc/default/grub.pre-restore` before the theme line is applied.
 - System services that were enabled on the old system and are disabled here get enabled.
 
@@ -262,9 +292,9 @@ sudo reboot
 | SSH | `ssh -T git@github.com` or `ssh <your-server>` |
 | Claude Code | `cd ~/path/to/project && claude --resume` → your old chats should show up |
 | Wi-Fi | saved networks connect automatically |
-| Browsers | Opera/Chrome with passwords and sessions (depends on KWallet / GNOME Keyring) |
+| Browsers | passwords and sessions (depends on KWallet / GNOME Keyring) |
 | Docker | `docker volume ls` → your volumes should be listed (without `sudo`) |
-| Flatpak / Snap | your apps are in the menu; `snap list` |
+| Flatpak / Snap | your apps are in the menu; `flatpak list`, `snap list` |
 
 ---
 
@@ -276,30 +306,32 @@ sudo reboot
 
 **The KDE look & feel was not applied** (KDE only)
 ```bash
-python3 -m pip install --user konsave
-konsave -i /run/media/$USER/<DISK>/fedora-backup-*/critical/migrazione.knsv -f
+python3 -m pip install --user konsave        # add --break-system-packages if pip refuses
+konsave -i /run/media/$USER/<DISK>/system-backup-*/critical/migrazione.knsv -f
 konsave -a migrazione
 ```
 Then log out and back in.
 
 **SSH or Claude chats missing**: restore manually from the safety archive
 ```bash
-zstd -dc /run/media/$USER/<DISK>/fedora-backup-*/critical/critical.tar.zst | tar -C /home -xpf -
+zstd -dc /run/media/$USER/<DISK>/system-backup-*/critical/critical.tar.zst | tar -C /home -xpf -
 chmod 700 ~/.ssh && chmod 600 ~/.ssh/* && chmod 644 ~/.ssh/*.pub
 ```
 
 **Recover a single file from the home**
 ```bash
-zstd -dc /run/media/$USER/<DISK>/fedora-backup-*/home.tar.zst | tar -C /tmp -xpf - "$USER/Desktop/FILENAME"
+zstd -dc /run/media/$USER/<DISK>/system-backup-*/home.tar.zst | tar -C /tmp -xpf - "$USER/Desktop/FILENAME"
 ```
 
 **Look at a system config from the old PC**
 ```bash
 mkdir -p ~/old-etc
-zstd -dc /run/media/$USER/<DISK>/fedora-backup-*/system/etc.tar.zst | sudo tar -C ~/old-etc -xpf -
+zstd -dc /run/media/$USER/<DISK>/system-backup-*/system/etc.tar.zst | sudo tar -C ~/old-etc -xpf -
 ```
 
-**A manual RPM did not install**: download it again from the official site and install it with `sudo dnf install ./file.rpm`.
+**A package from a local file did not install**: download it again from the official site and install it (`sudo dnf install ./file.rpm`, `sudo apt install ./file.deb`, `sudo pacman -U file.pkg.tar.zst`).
+
+**Moved to a different distribution**: your old package list is in `pkgs/packages-explicit.txt`; install the equivalents by hand.
 
 **Docker says "permission denied"**: you need a new login for the `docker` group to take effect (a reboot is enough).
 
@@ -311,8 +343,12 @@ zstd -dc /run/media/$USER/<DISK>/fedora-backup-*/system/etc.tar.zst | sudo tar -
 |---|---|
 | Trash | excluded, unless you chose to include it |
 | Cache (`~/.cache`) | rebuilt automatically |
+| System packages when changing distribution | names differ: see `pkgs/` |
+| Custom pacman repos other than `[multilib]` | reported; add them and their keys by hand |
 | Snaps installed from a local `.snap` file | reinstall them manually |
 | Docker images / build cache | pull them again with `docker pull` / `docker compose build` |
 | Other partitions/disks | only your home and the system files listed above are backed up |
 
-> 🔒 Keep the old SSD untouched until you have verified everything in step 8.
+> 🔒 Keep the old disk untouched until you have verified everything in step 8.
+
+Backups made by older versions of these scripts (`fedora-backup-*` folders, Fedora only) are still recognized and can be restored.

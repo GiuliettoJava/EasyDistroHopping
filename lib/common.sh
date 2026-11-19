@@ -2,6 +2,10 @@ RED=$'\e[31m'; GRN=$'\e[32m'; YLW=$'\e[33m'; BLU=$'\e[34m'; RST=$'\e[0m'
 die()    { echo "${RED}[ERROR]${RST} $*"; exit 1; }
 yes_no() { local a; read -rp "$1 [y/N] " a; [[ "$a" =~ ^[sSyY]$ ]]; }
 
+BACKUP_GLOBS=(system-backup-* fedora-backup-*)
+
+os_field() { ( . /etc/os-release 2>/dev/null; printf '%s\n' "${!1:-}" ); }
+
 detect_de() {
   local d="${XDG_CURRENT_DESKTOP:-${DESKTOP_SESSION:-}}"
   case "${d,,}" in
@@ -26,4 +30,86 @@ detect_de() {
 
 graphical_session_running() {
   pgrep -u "$(id -u)" -x 'plasmashell|gnome-shell|xfce4-session|cinnamon|mate-session|lxqt-session|budgie-panel' >/dev/null
+}
+
+detect_pm() {
+  if   command -v dnf     >/dev/null; then echo dnf
+  elif command -v apt-get >/dev/null; then echo apt
+  elif command -v pacman  >/dev/null; then echo pacman
+  else echo unknown
+  fi
+}
+
+PM="${PM:-$(detect_pm)}"
+
+pm_list_explicit() {
+  case "$PM" in
+    dnf)    dnf repoquery --userinstalled --qf '%{name}\n' ;;
+    apt)    apt-mark showmanual ;;
+    pacman) pacman -Qqe ;;
+  esac 2>/dev/null | sort -u
+}
+
+pm_list_local() {
+  case "$PM" in
+    dnf)    dnf repoquery --installed --qf '%{name} %{from_repo}\n' \
+              | awk '$2=="@commandline" || $2=="<unknown>" {print $1}' ;;
+    apt)    apt list --installed 2>/dev/null | awk -F/ '/\[installed.*local\]/{print $1}' ;;
+    pacman) pacman -Qqm ;;
+  esac 2>/dev/null | sort -u
+}
+
+pm_list_all() {
+  case "$PM" in
+    dnf)    rpm -qa --qf '%{NAME}\t%{VERSION}-%{RELEASE}\t%{ARCH}\n' ;;
+    apt)    dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' ;;
+    pacman) pacman -Q | tr ' ' '\t' ;;
+  esac 2>/dev/null | sort
+}
+
+pm_list_available() {
+  case "$PM" in
+    dnf)    dnf repoquery --available --qf '%{name}\n' ;;
+    apt)    apt-cache pkgnames ;;
+    pacman) pacman -Slq ;;
+  esac 2>/dev/null | sort -u
+}
+
+pm_is_installed() {
+  case "$PM" in
+    dnf)    rpm -q "$1" ;;
+    apt)    dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'install ok installed' ;;
+    pacman) pacman -Qq "$1" ;;
+  esac >/dev/null 2>&1
+}
+
+pm_install() {
+  case "$PM" in
+    dnf)    sudo dnf install -y "$@" ;;
+    apt)    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "$@" ;;
+    pacman) sudo pacman -S --needed --noconfirm "$@" ;;
+  esac
+}
+
+pm_refresh() {
+  case "$PM" in
+    dnf)    sudo dnf makecache -y ;;
+    apt)    sudo apt-get update ;;
+    pacman) sudo pacman -Syu --noconfirm ;;
+  esac
+}
+
+pm_local_ext() {
+  case "$PM" in
+    dnf)    echo rpm ;;
+    apt)    echo deb ;;
+    pacman) echo pkg.tar.zst ;;
+  esac
+}
+
+pm_pip_package() {
+  case "$PM" in
+    pacman) echo python-pip ;;
+    *)      echo python3-pip ;;
+  esac
 }

@@ -105,9 +105,9 @@ is_verified() {
 
 choose_backup() {
   local root="$1" backups b i=1 c tag
-  mapfile -t backups < <(find "$root" -maxdepth 2 -type d -name 'fedora-backup-*' 2>/dev/null \
+  mapfile -t backups < <(find "$root" -maxdepth 2 -type d \( -name 'system-backup-*' -o -name 'fedora-backup-*' \) 2>/dev/null \
                          | while read -r b; do [[ -f "$b/home.tar.zst" ]] && echo "$b"; done | sort -r)
-  ((${#backups[@]})) || die "No backup (fedora-backup-*) found in $root"
+  ((${#backups[@]})) || die "No backup (system-backup-*) found in $root"
   echo
   echo "${BLU}==>${RST} Backups found in $root"
   for b in "${backups[@]}"; do
@@ -178,8 +178,9 @@ case "${1:-}" in
   mount)         do_mount ;;
   "")
     echo "=========================================="
-    echo "  migrate — Fedora system migration"
+    echo "  migrate — Linux system migration"
     echo "=========================================="
+    echo "System: $(os_field PRETTY_NAME)  |  package manager: $PM"
     echo "Desktop environment: $(detect_de)"
     [[ -f "$HERE/home.tar.zst" ]] && echo "${YLW}Running from inside a backup:${RST} $HERE"
     echo "  1) SAVE    — back up this system to an external disk"
