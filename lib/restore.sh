@@ -36,7 +36,8 @@ PKG_AUR="$B/pkgs/aur-packages.txt"
 
 if ((HOME_INCLUDED)) && [[ "$(id -un)" != "$OLD_USER" || "$HOME" != "/home/$OLD_USER" ]]; then
   echo "${YLW}Current user: $(id -un) — backup user: $OLD_USER${RST}"
-  echo "With a different user, Claude Code chats and many paths will NOT match."
+  echo "The files will be restored into $HOME, but Claude Code chats and settings that contain"
+  echo "/home/$OLD_USER paths will NOT match."
   yes_no "Continue anyway?" || exit 1
 fi
 
@@ -168,13 +169,13 @@ else
 info "[2/10] Restoring home (all files) — this is the long part"
 tar -C "$HOME" -cf - .config .local 2>/dev/null | zstd -q -o "$HOME/.home-fresh-before-restore.tar.zst" 2>/dev/null
 if command -v pv >/dev/null; then
-  pv "$B/home.tar.zst" | zstd -dc | tar -C "/home" -xpf - --xattrs --acls
+  pv "$B/home.tar.zst" | zstd -dc | tar -C "$HOME" -xpf - --xattrs --acls --strip-components=1
 else
-  zstd -dc "$B/home.tar.zst" | tar -C "/home" -xpf - --xattrs --acls
+  zstd -dc "$B/home.tar.zst" | tar -C "$HOME" -xpf - --xattrs --acls --strip-components=1
 fi
 rc=("${PIPESTATUS[@]}")
 if [[ ${rc[*]} =~ ^(0 ?)+$ ]]; then ok "home restored"; else fail "home extraction (exit codes: ${rc[*]})"; fi
-step "critical files (SSH, Claude Code, wallet)" bash -c "zstd -dc '$B/critical/critical.tar.zst' | tar -C /home -xpf - --xattrs --acls"
+step "critical files (SSH, Claude Code, wallet)" bash -c "zstd -dc '$B/critical/critical.tar.zst' | tar -C \"\$HOME\" -xpf - --xattrs --acls --strip-components=1"
 step "home ownership" sudo chown -R "$(id -un):$(id -gn)" "$HOME"
 selinux_on && step "home SELinux labels" sudo restorecon -RF "$HOME"
 
@@ -395,18 +396,37 @@ while read -r f; do
   if sudo visudo -cf "$f" >/dev/null; then sudo install -m 440 "$f" "/etc/sudoers.d/$n" && ok "sudoers.d: $n"
   else fail "sudoers.d: $n is invalid, skipped"; fi
 done < <(old_files sudoers.d '*')
-while read -r line; do
-  grep -qF "$line" /etc/hosts || { echo "$line" | sudo tee -a /etc/hosts >/dev/null && ok "hosts: $line"; }
-done < <(sudo grep -vE '^\s*(#|$)' "$OLDETC/hosts" 2>/dev/null)
+hosts_has() {
+  awk -v ip="$1" -v n="$2" '{sub(/#.*/, "")} $1 == ip {for (i = 2; i <= NF; i++) if ($i == n) f = 1} END {exit !f}' /etc/hosts
+}
+while read -r ip names; do
+  [[ -n "$ip" && -n "$names" ]] || continue
+  add=""
+  for n in $names; do hosts_has "$ip" "$n" || add+=" $n"; done
+  [[ -n "$add" ]] && echo "$ip$add" | sudo tee -a /etc/hosts >/dev/null && ok "hosts: $ip$add"
+done < <(sudo sed -e 's/#.*//' "$OLDETC/hosts" 2>/dev/null)
 mkdir -p "$TMP/opt"; zstd -dc "$B/system/opt.tar.zst" | sudo tar -C "$TMP/opt" -xpf -
 for d in "$TMP"/opt/opt/*; do
   [[ -d "$d" ]] || continue; n="$(basename "$d")"
-  if [[ ! -e "/opt/$n" ]]; then sudo cp -a "$d" "/opt/$n" && ok "/opt/$n" || fail "/opt/$n"; fi
+  if [[ ! -e "/opt/$n" ]]; then
+    sudo cp -a "$d" "/opt/$n" && ok "/opt/$n" || fail "/opt/$n"
+    selinux_on && sudo restorecon -R "/opt/$n"
+  fi
 done
 step "/usr/local" bash -c "zstd -dc '$B/system/usr-local.tar.zst' | sudo tar -C / -xpf - --skip-old-files"
 CUR_HOSTNAME="$(hostnamectl --static 2>/dev/null || cat /etc/hostname)"
 [[ -z "$OLD_HOSTNAME" || "$CUR_HOSTNAME" == "$OLD_HOSTNAME" ]] || step "hostname $OLD_HOSTNAME" sudo hostnamectl set-hostname "$OLD_HOSTNAME"
-[[ -s "$B/system/crontab-user.txt" ]] && step "crontab" crontab "$B/system/crontab-user.txt"
+if [[ -s "$B/system/crontab-user.txt" ]]; then
+  if ! command -v crontab >/dev/null; then
+    case "$PM" in apt) cron_pkg=cron ;; *) cron_pkg=cronie ;; esac
+    step "installing cron ($cron_pkg)" pm_install "$cron_pkg"
+    for s in crond cronie cron; do
+      systemctl list-unit-files "$s.service" --no-legend 2>/dev/null | grep -q . && sudo systemctl enable --now "$s.service" >/dev/null 2>&1
+    done
+  fi
+  if command -v crontab >/dev/null; then step "crontab" crontab "$B/system/crontab-user.txt"
+  else fail "crontab not restored: install cron, then run: crontab $B/system/crontab-user.txt"; fi
+fi
 
 info "[9/10] GRUB theme"
 GRUB_DIR=""; for d in /boot/grub2 /boot/grub; do [[ -d "$d" ]] && { GRUB_DIR="$d"; break; }; done
@@ -419,6 +439,7 @@ else
   mkdir -p "$TMP/grub"; zstd -dc "$B/system/grub-themes.tar.zst" | sudo tar -C "$TMP/grub" -xpf -
   SRC="$(sudo find "$TMP/grub" -maxdepth 2 -type d -name themes | head -1)"
   step "copying themes to $GRUB_DIR/themes" sudo bash -c "mkdir -p '$GRUB_DIR/themes' && cp -a '$SRC'/. '$GRUB_DIR/themes/'"
+  selinux_on && sudo restorecon -R "$GRUB_DIR/themes"
   THEME_LINE="$(sudo grep -E '^GRUB_THEME=' "$OLDETC/default/grub" | sed -E "s#/boot/grub2?/themes/#$GRUB_DIR/themes/#")"
   if [[ -n "$THEME_LINE" ]]; then
     sudo cp /etc/default/grub /etc/default/grub.pre-restore

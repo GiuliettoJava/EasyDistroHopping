@@ -27,7 +27,7 @@ DEST_ROOT="$(realpath "$DEST_ROOT")"
 
 USER_NAME="$(id -un)"
 HOME_DIR="$HOME"
-STAMP="$(date +%Y%m%d-%H%M)"
+STAMP="$(date +%Y%m%d-%H%M%S)"
 B="$DEST_ROOT/system-backup-$STAMP"
 DE="$(detect_de)"
 command -v zstd >/dev/null || die "zstd is required: install the 'zstd' package and run again."
@@ -42,7 +42,7 @@ esac
 info "Destination filesystem: $FSTYPE"
 info "System: ${OS_NAME:-$OS_ID}  |  package manager: $PM"
 info "Desktop environment: $DE$( ((IS_KDE)) || echo ' (KDE-specific steps will be skipped)')"
-if ((NO_HOME == 0)) && [[ "$(findmnt -no SOURCE --target "$DEST_ROOT" | sed 's/\[.*//')" == "$(findmnt -no SOURCE --target "$HOME" | sed 's/\[.*//')" ]]; then
+if ((NO_HOME == 0)) && same_disk "$DEST_ROOT" "$HOME"; then
   die "Destination '$DEST_ROOT' is on the same disk as your home! Use the external USB stick/disk (e.g. /run/media/$(id -un)/<DISK>)."
 fi
 
@@ -292,7 +292,7 @@ if ((${#WARNINGS[@]})); then
 fi
 if [[ $VERIFY_OK -eq 1 ]]; then
   echo "${GRN}BACKUP COMPLETED AND VERIFIED:${RST} $B"
-  ((NO_HOME)) && echo "${YLW}Trial backup (--no-home): it does NOT contain your files, use it only to test a restore.${RST}"
+  ((NO_HOME == 0)) || echo "${YLW}Trial backup (--no-home): it does NOT contain your files, use it only to test a restore.${RST}"
 else
   echo "${RED}BACKUP HAS ERRORS — check the warnings above and $LOG before formatting!${RST}"
   exit 1

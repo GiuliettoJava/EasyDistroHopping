@@ -150,3 +150,15 @@ aur_filter_existing() {
 }
 
 is_aur_helper_pkg() { [[ "$1" =~ ^(paru|yay|pikaur|trizen)(-bin|-git)?$ ]]; }
+
+disk_of() { lsblk -lspno NAME "$1" 2>/dev/null | tail -1; }
+mount_source() { findmnt -no SOURCE --target "$1" 2>/dev/null | sed 's/\[.*//'; }
+
+same_disk() {
+  local a b da db
+  a="$(mount_source "$1")"; b="$(mount_source "$2")"
+  [[ -n "$a" && "$a" == "$b" ]] && return 0
+  [[ -b "$a" && -b "$b" ]] || return 1
+  da="$(disk_of "$a")"; db="$(disk_of "$b")"
+  [[ -n "$da" && "$da" == "$db" ]]
+}

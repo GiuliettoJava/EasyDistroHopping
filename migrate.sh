@@ -9,7 +9,6 @@ SELECTED_DIR=""
 SELECTED_DEV=""
 MOUNTED_WITH_SUDO=0
 
-disk_of() { lsblk -lspno NAME,TYPE "$1" 2>/dev/null | awk '$2=="disk"{print $1; exit}'; }
 mountpoint_of() { findmnt -no TARGET -S "$1" 2>/dev/null | head -1; }
 
 system_disks() {
