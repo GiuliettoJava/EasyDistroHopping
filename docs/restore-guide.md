@@ -8,7 +8,7 @@ How to rebuild the system on the new disk, from preparing the installer to the c
 
 | What | Details |
 |---|---|
-| **Backup USB stick/disk** | contains the `system-backup-YYYYMMDD-HHMM/` folder |
+| **Backup USB stick/disk** | contains the `system-backup-YYYYMMDD-HHMMSS/` folder |
 | **Another USB stick** for the installer | ≥ 4 GB, it will be wiped. **Do not use the backup one!** |
 | Installer ISO | of the distribution you want (to keep the KDE look & feel, pick a KDE edition again) |
 | Internet connection | wired is easier: Wi-Fi is only restored later |
@@ -58,7 +58,7 @@ It must print `OK`. Then write it to the **second** USB stick with balenaEtcher,
 
    | Why | |
    |---|---|
-   | same user | Claude Code chats are tied to the `/home/<user>/...` path |
+   | same user | Claude Code chats are tied to the `/home/<user>/...` path (with another user the files are still restored into your home, but paths inside them won't match) |
    | same password | KWallet / GNOME Keyring (saved browser and Wi-Fi passwords) is unlocked at login |
 
 4. Make sure your user can use `sudo` (on Debian, if you set a root password during install: `su -c "usermod -aG sudo $USER"` and log in again).
@@ -139,7 +139,7 @@ bash lib/restore.sh /run/media/$USER/<LABEL>/system-backup-XXXX
 | 5 | Flatpak & Snap | installs flatpak/snapd if needed; flatpak apps from Flathub or `.flatpak` bundles; snaps on the same channel (classic when needed) + their data snapshot |
 | 6 | **Look & feel** | KDE → KDE: imports and applies the konsave `migrazione` profile; otherwise skipped (settings come from the home) |
 | 7 | Network | NetworkManager Wi-Fi and VPN connections with their passwords |
-| 8 | System | sysctl, udev, sudoers, `/etc/hosts`, manually installed apps in `/opt`, `/usr/local`, hostname, crontab |
+| 8 | System | sysctl, udev, sudoers, `/etc/hosts`, manually installed apps in `/opt`, `/usr/local`, hostname, crontab (cron is installed if missing) |
 | 9 | GRUB | GRUB theme into `/boot/grub2` or `/boot/grub` + regenerates `grub.cfg` (skipped with other bootloaders) |
 | 10 | Docker | `docker`/`input` groups, enables Docker, restores Docker volumes |
 
@@ -152,7 +152,7 @@ The script **does not stop on individual errors**: it keeps going and prints the
 - Packages that don't exist in the new system's repositories are skipped and listed in a single line; the rest is installed in bulk (one at a time if the bulk install fails). Kernel packages are skipped.
 - apt: official Debian/Ubuntu sources are left to the new install; only third-party sources are copied.
 - pip: on distributions that block `pip install --user` (PEP 668, e.g. Debian 12+, Arch), it retries with `--break-system-packages`.
-- `sudoers.d` files are validated with `visudo` before being copied; custom `/etc/hosts` lines are appended; `/opt` folders are restored only if no package recreated them.
+- `sudoers.d` files are validated with `visudo` before being copied; host names from the old `/etc/hosts` are added only if missing (compared by IP and name, so nothing is duplicated); `/opt` folders are restored only if no package recreated them, with their SELinux labels reset where SELinux is enabled.
 - Snap: creates the `/snap` symlink (needed by classic snaps), enables `snapd.socket`, installs each snap from its old tracking channel (base/core snaps are pulled in automatically), then imports and restores the data snapshot.
 - VPN connections may need their NetworkManager plugin (openvpn, wireguard...), which is installed only if it was in the package list.
 - The original GRUB config is saved as `/etc/default/grub.pre-restore` before the theme line is applied.
