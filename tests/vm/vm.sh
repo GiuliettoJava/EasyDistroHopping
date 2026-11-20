@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VM_HOME="${VM_HOME:-$HOME/.local/share/backupping-vms}"
+VM_HOME="${VM_HOME:-$HOME/.local/share/easydistrohopping-vms}"
 IMG="$VM_HOME/images"; RUN="$VM_HOME/vms"; USBDIR="$VM_HOME/usb"
 KEY="$VM_HOME/id_ed25519"
 VM_USER=tester
@@ -32,7 +32,7 @@ cmd_fetch() {
   curl -fL $pb -o "$out.part" "$(image_url "$d")" && mv "$out.part" "$out"
 }
 
-ensure_key() { [[ -f "$KEY" ]] || ssh-keygen -q -t ed25519 -N '' -C backupping-vm -f "$KEY"; }
+ensure_key() { [[ -f "$KEY" ]] || ssh-keygen -q -t ed25519 -N '' -C easydistrohopping-vm -f "$KEY"; }
 
 make_seed() {
   local name="$1" dir="$RUN/$1" pub
@@ -130,7 +130,7 @@ cmd_wait() {
 }
 
 cmd_push() {
-  local name="$1" src="${2:-$(cd "$(dirname "$0")/../.." && pwd)}" dst="${3:-backupping}"
+  local name="$1" src="${2:-$(cd "$(dirname "$0")/../.." && pwd)}" dst="${3:-EasyDistroHopping}"
   tar -C "$src" --exclude=.git --exclude='system-backup-*' --exclude='fedora-backup-*' -cf - . \
     | cmd_exec "$name" "rm -rf ~/$dst && mkdir -p ~/$dst && tar -C ~/$dst -xf -"
   echo "pushed $src -> $name:~/$dst"
@@ -184,7 +184,7 @@ Usage: tests/vm/vm.sh COMMAND ...
   wait NAME [SECONDS]            wait for ssh + cloud-init
   ssh NAME [CMD...]              interactive shell (user $VM_USER, password $VM_USER)
   exec NAME CMD...               run a command, no tty
-  push NAME [SRC] [DEST]         copy the repo into ~/backupping in the VM
+  push NAME [SRC] [DEST]         copy the repo into ~/EasyDistroHopping in the VM
   pull NAME REMOTE_PATH [DIR]    copy a file/dir out of the VM
   stop NAME | destroy NAME
   usb NAME [SIZE] | usb-rm NAME  virtual USB stick, attach with start --usb NAME

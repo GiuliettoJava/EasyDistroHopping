@@ -3,7 +3,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 VM="$HERE/vm.sh"
-VM_HOME="${VM_HOME:-$HOME/.local/share/backupping-vms}"
+VM_HOME="${VM_HOME:-$HOME/.local/share/easydistrohopping-vms}"
 
 usage() {
   cat <<EOF
@@ -108,7 +108,7 @@ EOF
 
 step "Backup on source"
 set +e
-on "$SRC" 'printf "n\n" | bash ~/backupping/migrate.sh save /mnt/usb'
+on "$SRC" 'printf "n\n" | bash ~/EasyDistroHopping/migrate.sh save /mnt/usb'
 BACKUP_RC=$?
 set -e
 on "$SRC" 'sync; d=$(ls -d /mnt/usb/system-backup-* /mnt/usb/backups/system-backup-* 2>/dev/null | tail -1); cp "$d/backup.log" /tmp/backup.log 2>/dev/null; ls -la "$d"; sudo umount /mnt/usb' || true

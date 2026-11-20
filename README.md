@@ -451,7 +451,7 @@ tests/vm/migrate-test.sh debian ubuntu --fs exfat # apt → apt, exFAT stick
 tests/vm/migrate-test.sh arch fedora --keep       # different package manager, keep the VMs
 ```
 
-`migrate-test.sh` creates the source VM, fills it with test data (home files, dotfiles, crontab, `/etc/sysctl.d`, `/etc/hosts`, `/opt`, `/usr/local`, a few packages), runs `migrate.sh save` onto the stick, then restores into a fresh VM with `migrate.sh restore` and checks that everything arrived. Logs and the check list are saved in `~/.local/share/backupping-vms/results/`.
+`migrate-test.sh` creates the source VM, fills it with test data (home files, dotfiles, crontab, `/etc/sysctl.d`, `/etc/hosts`, `/opt`, `/usr/local`, a few packages), runs `migrate.sh save` onto the stick, then restores into a fresh VM with `migrate.sh restore` and checks that everything arrived. Logs and the check list are saved in `~/.local/share/easydistrohopping-vms/results/`.
 
 For manual tests, `tests/vm/vm.sh` handles single VMs:
 
