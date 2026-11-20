@@ -275,6 +275,7 @@ fi
 mkdir -p "$B/lib"
 cp "$ROOT_DIR/migrate.sh" "$B/" || warn "migrate.sh not found in $ROOT_DIR"
 cp "$ROOT_DIR/README.md" "$B/" 2>/dev/null
+cp -r "$ROOT_DIR/docs" "$B/" 2>/dev/null
 cp "$ROOT_DIR/LICENSE" "$B/" 2>/dev/null
 cp "$SCRIPT_DIR"/*.sh "$B/lib/" || warn "could not copy lib/ scripts into the backup"
 chmod +x "$B"/*.sh "$B"/lib/*.sh 2>/dev/null
