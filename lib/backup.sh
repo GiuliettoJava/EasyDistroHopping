@@ -6,15 +6,21 @@ ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 source "$SCRIPT_DIR/common.sh"
 
 DEST_ROOT="${1:-}"
-INCLUDE_TRASH=0
-[[ "${2:-}" == "--include-trash" ]] && INCLUDE_TRASH=1
+INCLUDE_TRASH=0; NO_HOME=0
+for a in "${@:2}"; do
+  case "$a" in
+    --include-trash) INCLUDE_TRASH=1 ;;
+    --no-home)       NO_HOME=1 ;;
+    *) die "Unknown option: $a" ;;
+  esac
+done
 
 info() { echo "${BLU}==>${RST} $*"; }
 ok()   { echo "${GRN}[OK]${RST} $*"; }
 warn() { echo "${YLW}[WARNING]${RST} $*"; WARNINGS+=("$*"); }
 WARNINGS=()
 
-[[ -n "$DEST_ROOT" ]] || die "Usage: $0 /path/to/destination [--include-trash]"
+[[ -n "$DEST_ROOT" ]] || die "Usage: $0 /path/to/destination [--include-trash] [--no-home]"
 [[ $EUID -ne 0 ]]     || die "Do not run as root. Run it as a normal user."
 [[ -d "$DEST_ROOT" ]] || die "Destination '$DEST_ROOT' does not exist (is the disk mounted?)"
 DEST_ROOT="$(realpath "$DEST_ROOT")"
@@ -36,7 +42,7 @@ esac
 info "Destination filesystem: $FSTYPE"
 info "System: ${OS_NAME:-$OS_ID}  |  package manager: $PM"
 info "Desktop environment: $DE$( ((IS_KDE)) || echo ' (KDE-specific steps will be skipped)')"
-if [[ "$(findmnt -no SOURCE --target "$DEST_ROOT" | sed 's/\[.*//')" == "$(findmnt -no SOURCE --target "$HOME" | sed 's/\[.*//')" ]]; then
+if ((NO_HOME == 0)) && [[ "$(findmnt -no SOURCE --target "$DEST_ROOT" | sed 's/\[.*//')" == "$(findmnt -no SOURCE --target "$HOME" | sed 's/\[.*//')" ]]; then
   die "Destination '$DEST_ROOT' is on the same disk as your home! Use the external USB stick/disk (e.g. /run/media/$(id -un)/<DISK>)."
 fi
 
@@ -55,7 +61,8 @@ esac
 info "Calculating size of the data to back up (may take a minute)..."
 DU_EXCL=()
 for e in "${EXCLUDES[@]}"; do DU_EXCL+=("--exclude=/home/$e"); done
-HOME_BYTES=$(du -sb "${DU_EXCL[@]}" "$HOME_DIR" 2>/dev/null | awk '{print $1}')
+if ((NO_HOME)); then HOME_BYTES=0; info "--no-home: home and critical files are NOT included (trial backup)"
+else HOME_BYTES=$(du -sb "${DU_EXCL[@]}" "$HOME_DIR" 2>/dev/null | awk '{print $1}'); fi
 NEED=$(( HOME_BYTES + 2*1024*1024*1024 ))
 AVAIL=$(df -B1 --output=avail "$DEST_ROOT" | tail -1)
 info "Home data: $(numfmt --to=iec "$HOME_BYTES")  |  Free space on destination: $(numfmt --to=iec "$AVAIL")"
@@ -66,6 +73,7 @@ for p in opera chrome firefox discord spotify code postman gitkraken; do
     warn "Process '$p' is running: close it for a consistent profile backup."
   fi
 done
+((NO_HOME)) && WARNINGS=()
 if ((${#WARNINGS[@]})); then
   read -rp "Some apps are still open. Continue anyway? [y/N] " a
   [[ "$a" =~ ^[sSyY]$ ]] || die "Aborted. Close the apps and run again."
@@ -91,6 +99,9 @@ check_tar() {
   else warn "$desc: error (tar=$tar_rc zstd=$z_rc)"; fi
 }
 
+if ((NO_HOME)); then
+  info "[1/7] Critical files: skipped (--no-home)"
+else
 info "[1/7] Separate archive of critical files (SSH, GnuPG, Claude Code, git$( ((IS_KDE)) && echo ', KWallet, konsave'))"
 CRIT_PATHS=(.ssh .claude .claude.json .local/share/claude .local/bin/claude .gnupg
             .gitconfig .config/gh .bashrc .bash_profile
@@ -106,6 +117,7 @@ tar -C /home -cpf - --xattrs --acls "${CRIT[@]}" 2>>"$B/meta/tar-critical-warnin
 check_tar "critical files" "${PIPESTATUS[@]}"
 cp -a "$HOME_DIR/.ssh/config" "$B/critical/ssh_config.txt" 2>/dev/null
 ls -1 "$HOME_DIR/.claude/projects" > "$B/critical/claude-projects.txt" 2>/dev/null
+fi
 
 info "[2/7] Package lists ($PM, flatpak, snap, pip, pipx, VS Code)"
 P="$B/pkgs"
@@ -185,6 +197,7 @@ M="$B/meta"
   echo "pm=$PM"
   echo "aur_helper=$AUR_HELPER"
   echo "de=$DE"
+  echo "home_included=$((1 - NO_HOME))"
   echo "date=$(date -Is)"
 } > "$M/system-info.env"
 cat /etc/os-release > "$M/os-release.txt"
@@ -198,6 +211,9 @@ nmcli -t -f NAME,TYPE con show > "$M/nm-connections.txt" 2>&1
 lspci > "$M/lspci.txt" 2>&1
 ok "info saved"
 
+if ((NO_HOME)); then
+  info "[5/7] Home archive: skipped (--no-home)"
+else
 info "[5/7] Full home archive ($(numfmt --to=iec "$HOME_BYTES")) — this is the long part"
 EXCL_ARGS=()
 for e in "${EXCLUDES[@]}"; do EXCL_ARGS+=("--exclude=$e"); done
@@ -212,6 +228,7 @@ else
   check_tar "home" "${PIPESTATUS[@]}"
 fi
 ls -lh "$B/home.tar.zst"
+fi
 
 if ((IS_KDE)); then
   info "[6/7] Saving KDE look & feel with konsave"
@@ -243,8 +260,12 @@ for a in "$B"/home.tar.zst "$B"/critical/critical.tar.zst "$B"/system/*.tar.zst;
   if zstd -dc "$a" 2>/dev/null | tar -tf - >/dev/null 2>&1; then ok "intact: ${a#"$B/"}"
   else warn "CORRUPTED ARCHIVE: $a"; VERIFY_OK=0; fi
 done
-zstd -dc "$B/critical/critical.tar.zst" | tar -tf - > "$M/critical-list.txt"
-for must in "$USER_NAME/.ssh/id_ed25519" "$USER_NAME/.ssh/config" "$USER_NAME/.claude/projects/" "$USER_NAME/.claude.json"; do
+MUST=()
+[[ -f "$B/critical/critical.tar.zst" ]] && zstd -dc "$B/critical/critical.tar.zst" | tar -tf - > "$M/critical-list.txt"
+for f in "$HOME_DIR"/.ssh/id_* "$HOME_DIR"/.ssh/config "$HOME_DIR"/.gnupg "$HOME_DIR"/.claude/projects "$HOME_DIR"/.claude.json; do
+  ((NO_HOME)) || [[ ! -e "$f" ]] || MUST+=("$USER_NAME/${f#"$HOME_DIR/"}")
+done
+for must in "${MUST[@]}"; do
   grep -q "^$must" "$M/critical-list.txt" && ok "present: $must" || { warn "MISSING: $must"; VERIFY_OK=0; }
 done
 if ((IS_KDE)); then
@@ -270,6 +291,7 @@ if ((${#WARNINGS[@]})); then
 fi
 if [[ $VERIFY_OK -eq 1 ]]; then
   echo "${GRN}BACKUP COMPLETED AND VERIFIED:${RST} $B"
+  ((NO_HOME)) && echo "${YLW}Trial backup (--no-home): it does NOT contain your files, use it only to test a restore.${RST}"
 else
   echo "${RED}BACKUP HAS ERRORS — check the warnings above and $LOG before formatting!${RST}"
   exit 1

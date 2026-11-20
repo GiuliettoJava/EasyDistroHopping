@@ -99,6 +99,8 @@ choose_volume() {
   done
 }
 
+is_backup() { [[ -f "$1/home.tar.zst" || -f "$1/meta/system-info.env" ]]; }
+
 is_verified() {
   grep -qE 'BACKUP (COMPLETED AND VERIFIED|COMPLETATO E VERIFICATO)' "$1/backup.log" 2>/dev/null
 }
@@ -106,7 +108,7 @@ is_verified() {
 choose_backup() {
   local root="$1" backups b i=1 c tag
   mapfile -t backups < <(find "$root" -maxdepth 2 -type d \( -name 'system-backup-*' -o -name 'fedora-backup-*' \) 2>/dev/null \
-                         | while read -r b; do [[ -f "$b/home.tar.zst" ]] && echo "$b"; done | sort -r)
+                         | while read -r b; do is_backup "$b" && echo "$b"; done | sort -r)
   ((${#backups[@]})) || die "No backup (system-backup-*) found in $root"
   echo
   echo "${BLU}==>${RST} Backups found in $root"
@@ -122,13 +124,21 @@ choose_backup() {
 }
 
 do_save() {
-  local dest="${1:-}" rc
+  local dest="" rc a extra=()
+  for a; do
+    case "$a" in
+      --no-home) extra+=(--no-home) ;;
+      -*) die "Unknown option: $a" ;;
+      *) dest="$a" ;;
+    esac
+  done
   [[ -f "$LIB/backup.sh" ]]  || die "backup.sh not found in $LIB"
   [[ -f "$LIB/restore.sh" ]] || die "restore.sh not found in $LIB"
   if [[ -z "$dest" ]]; then
     choose_volume "Where should the backup be saved?"
     dest="$SELECTED_DIR"
   fi
+  [[ " ${extra[*]} " == *" --no-home "* && ! -e "$dest" ]] && mkdir -p "$dest"
   [[ -d "$dest" ]] || die "Destination not found: $dest"
   if [[ ! -w "$dest" ]]; then
     echo "${YLW}$dest is not writable by $(id -un): creating $dest/backups owned by you.${RST}"
@@ -137,8 +147,11 @@ do_save() {
   fi
   echo
   echo "${GRN}BACKUP${RST} of this system to: $dest"
-  local extra=()
-  yes_no "Include the Trash too?" && extra=(--include-trash)
+  if [[ " ${extra[*]} " == *" --no-home "* ]]; then
+    echo "${YLW}Trial backup: home and critical files are left out.${RST}"
+  else
+    yes_no "Include the Trash too?" && extra+=(--include-trash)
+  fi
   bash "$LIB/backup.sh" "$dest" "${extra[@]}"
   rc=$?
   if [[ -n "$SELECTED_DEV" ]] && yes_no "Unmount $SELECTED_DEV now?"; then unmount_volume "$SELECTED_DEV"; fi
@@ -147,7 +160,7 @@ do_save() {
 
 do_restore() {
   local dir="${1:-}" script
-  if [[ -z "$dir" && -f "$HERE/home.tar.zst" ]]; then
+  if [[ -z "$dir" ]] && is_backup "$HERE"; then
     dir="$HERE"
   elif [[ -z "$dir" ]]; then
     choose_volume "Which disk contains the backup?"
@@ -155,7 +168,7 @@ do_restore() {
     dir="$SELECTED_DIR"
   fi
   dir="$(cd "$dir" 2>/dev/null && pwd)" || die "Backup folder not found"
-  [[ -f "$dir/home.tar.zst" ]] || die "$dir is not a backup folder (home.tar.zst missing)"
+  is_backup "$dir" || die "$dir is not a backup folder (meta/system-info.env missing)"
   if   [[ -f "$LIB/restore.sh" ]];     then script="$LIB/restore.sh"
   elif [[ -f "$dir/lib/restore.sh" ]]; then script="$dir/lib/restore.sh"
   elif [[ -f "$dir/restore.sh" ]];     then script="$dir/restore.sh"
@@ -182,7 +195,7 @@ case "${1:-}" in
     echo "=========================================="
     echo "System: $(os_field PRETTY_NAME)  |  package manager: $PM"
     echo "Desktop environment: $(detect_de)"
-    [[ -f "$HERE/home.tar.zst" ]] && echo "${YLW}Running from inside a backup:${RST} $HERE"
+    is_backup "$HERE" && echo "${YLW}Running from inside a backup:${RST} $HERE"
     echo "  1) SAVE    — back up this system to an external disk"
     echo "  2) RESTORE — restore this system from a backup"
     echo "  3) MOUNT   — just mount an external disk"
@@ -194,5 +207,5 @@ case "${1:-}" in
       3) do_mount ;;
       *) exit 0 ;;
     esac ;;
-  *) die "Usage: bash $0 [save [DEST] | restore [BACKUP_DIR] | mount]" ;;
+  *) die "Usage: bash $0 [save [DEST] [--no-home] | restore [BACKUP_DIR] | mount]" ;;
 esac

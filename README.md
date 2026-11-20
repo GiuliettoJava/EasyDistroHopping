@@ -1,23 +1,53 @@
-# Linux system backup & restore
+# EasyDistroHopping
+
+Back up a Linux system to an external disk and rebuild it on a fresh install — the same distro, or another one of the same family (Debian ↔ Ubuntu, Fedora ↔ RHEL clones, Arch ↔ Arch-based): files, packages, desktop look & feel, SSH keys, Wi-Fi. Works with `dnf`, `apt` and `pacman` (+ AUR).
 
 A **personal tool** I wrote to swap the SSD of my laptop when copying the partition straight to the new drive wasn't an option. Instead of cloning the disk, it saves everything that matters to an external disk, and after a clean install it rebuilds the system on the new SSD: files, programs, desktop look & feel, SSH keys, Claude Code chats, Wi-Fi.
 
 It's shared as-is in case it's useful to someone else in the same situation. Read the scripts before running them on your machine.
 
+## Which hops work
+
+Everything in your home (files, dotfiles, app settings, SSH/GPG keys) moves to any distribution. What changes is how much of the *system* can be rebuilt, and that depends on the package manager:
+
+| Hop | Example | Home & settings | System config ¹ | Repositories | System packages | Flatpak · Snap · pip |
+|---|---|:---:|:---:|:---:|:---:|:---:|
+| **Same distro** | Fedora → Fedora | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Same family** (same package manager) | Debian → Ubuntu · Arch → EndeavourOS · Fedora → AlmaLinux | ✅ | ✅ | 🟡 ² | 🟡 ³ | ✅ |
+| **Different family** | Arch → Fedora · Ubuntu → Arch | ✅ | ✅ | ❌ skipped | ❌ skipped ⁴ | ✅ |
+
+¹ hostname, `/etc/hosts`, sysctl, udev rules, sudoers, network connections (Wi-Fi/VPN), `/opt`, `/usr/local`, crontab, Docker volumes, GRUB theme.
+² `apt`: third-party repositories are reported instead of copied (their URLs are distro-specific), official ones come from the new system. `dnf`: RPM Fusion and COPR are only set up on Fedora. `pacman`: `[multilib]` is enabled, the AUR works everywhere.
+³ installed when a package with the same name exists on the new distribution; the others are listed at the end of the restore.
+⁴ names differ between families: the lists stay in the backup (`pkgs/`) to reinstall by hand.
+
+The KDE look & feel (konsave) is applied whenever both systems run KDE Plasma, whatever the distribution.
+
 ## Where it was used and tested
+
+**Real migration** — November 2026, with the first, Fedora-only version of the scripts:
 
 | | |
 |---|---|
 | Machine | Lenovo ThinkPad T470 (Intel Core i5-6300U, Intel HD Graphics 520, 16 GB RAM) |
 | New SSD | Intel SSDPEKKF256G8L 256 GB NVMe, btrfs |
-| System | Fedora 44 KDE Plasma 6 → fresh Fedora 44 KDE Plasma 6 |
-| Real migration | November 2026: backup to a USB stick (exFAT), clean install on the new SSD, restore from a TTY. All 10 restore steps completed; the only failure was one locally installed RPM (MongoDB Compass) that conflicted with another package and had to be installed by hand. |
+| Hop | Fedora 44 KDE Plasma 6 → fresh Fedora 44 KDE Plasma 6 |
+| How | backup to a USB stick (exFAT), clean install on the new SSD, restore from a TTY |
+| Result | ✅ all 10 restore steps completed; the only failure was one locally installed RPM (MongoDB Compass) that conflicted with another package and had to be installed by hand |
 
-That migration was done with the first, Fedora-only version of the scripts. The current version was then generalized:
-- on the same machine, the Fedora/`dnf` code paths were checked;
-- the `apt` (Debian 13) and `pacman` (Arch) package functions, including AUR helper bootstrap and AUR installs, were tested in containers.
+**Virtual machines** — full backup → restore cycles of the current version, run on the same machine with [`tests/vm/`](#testing-in-virtual-machines):
 
-A full backup → restore cycle on Debian/Ubuntu or Arch, and on desktops other than KDE, **has not been done yet**.
+| from ↓ · to → | Fedora 44 | Debian 13 | Ubuntu 26.04 | Arch |
+|---|:---:|:---:|:---:|:---:|
+| **Fedora 44** | ✅ | · | · | · |
+| **Debian 13** | · | ✅ | 🟡 | · |
+| **Arch** | ⏳ | · | · | ✅ |
+
+✅ restored with no errors, all checks passed · 🟡 all checks passed, with expected reports · ⏳ to be run again · `·` not tested yet. Details in [Test results](#test-results).
+
+The `apt` and `pacman` package functions, including the AUR helper bootstrap and AUR installs, were also tested in containers.
+
+**Not tested yet**: desktops other than KDE (GNOME, Xfce, …) and a real migration on Debian/Ubuntu or Arch hardware.
 
 ## Credits
 
@@ -107,6 +137,7 @@ Keep `migrate.sh` and `lib/` together (a clone of this repo, or the copy inside 
 ```bash
 bash migrate.sh                         # interactive menu
 bash migrate.sh save [DEST]             # backup
+bash migrate.sh save DEST --no-home     # trial backup without your files (see "Try your own distro hop first")
 bash migrate.sh restore [BACKUP_DIR]    # restore
 bash migrate.sh mount                   # only pick and mount a disk
 ```
@@ -258,8 +289,8 @@ You need `migrate.sh` and the `lib/` folder. Either:
 
 - **from this repository** (needs internet and `git`):
   ```bash
-  git clone https://github.com/<you>/<repo>.git ~/backup-scripts
-  cd ~/backup-scripts
+  git clone https://github.com/GiuliettoJava/EasyDistroHopping.git ~/EasyDistroHopping
+  cd ~/EasyDistroHopping
   ```
 - **or from the backup disk itself**, which already contains a copy. Mount it first:
   ```bash
@@ -403,4 +434,96 @@ zstd -dc /run/media/$USER/<DISK>/system-backup-*/system/etc.tar.zst | sudo tar -
 > 🔒 Keep the old disk untouched until you have verified everything in step 8.
 
 Backups made by older versions of these scripts (`fedora-backup-*` folders, Fedora only) are still recognized and can be restored.
+
+
+---
+
+## Testing in virtual machines
+
+`tests/vm/` holds a small QEMU/KVM harness that runs a whole migration between two throw‑away VMs, so changes can be tried on other distributions without touching a real disk. It uses the official cloud images (configured with cloud‑init), a virtual **USB stick** that is moved from the old VM to the new one, and ssh. libvirt is not needed.
+
+```bash
+sudo dnf install qemu-kvm qemu-img        # Debian/Ubuntu: qemu-system-x86 qemu-utils · Arch: qemu-base
+                                          # also needed: mtools, dosfstools, curl, openssh
+
+tests/vm/migrate-test.sh fedora fedora            # same distro
+tests/vm/migrate-test.sh debian ubuntu --fs exfat # apt → apt, exFAT stick
+tests/vm/migrate-test.sh arch fedora --keep       # different package manager, keep the VMs
+```
+
+`migrate-test.sh` creates the source VM, fills it with test data (home files, dotfiles, crontab, `/etc/sysctl.d`, `/etc/hosts`, `/opt`, `/usr/local`, a few packages), runs `migrate.sh save` onto the stick, then restores into a fresh VM with `migrate.sh restore` and checks that everything arrived. Logs and the check list are saved in `~/.local/share/backupping-vms/results/`.
+
+For manual tests, `tests/vm/vm.sh` handles single VMs:
+
+```bash
+tests/vm/vm.sh create box arch          # distros: fedora, debian, ubuntu, arch
+tests/vm/vm.sh usb stick                # empty 32G virtual USB stick
+tests/vm/vm.sh start box --usb stick    # add --gui for a window, --mem 6144 for a desktop
+tests/vm/vm.sh wait box && tests/vm/vm.sh push box
+tests/vm/vm.sh ssh box                  # user/password: tester/tester
+tests/vm/vm.sh list | stop box | destroy box
+```
+
+To test a desktop environment, install it inside the VM (e.g. `sudo dnf group install kde-desktop`) and start it with `--gui`.
+
+### Test results
+
+Run on the machine above (Fedora 44 host, QEMU/KVM) in November 2026, with `tests/vm/migrate-test.sh`. Each run: provision the old VM → `migrate.sh save` to a virtual USB stick → `migrate.sh restore` in a fresh VM → 14 checks (home file, `~/.config` dotfile, `.bashrc`, Trash excluded, `~/.ssh/config` permissions, crontab, `/etc/sysctl.d`, `/etc/hosts`, `/opt`, `/usr/local`, hostname, owner of every home file, two packages).
+
+| | Hop | Kind | USB stick | Backup | Restore | Checks | Notes |
+|:---:|---|---|---|---|---|:---:|---|
+| ✅ | Fedora 44 → Fedora 44 | same distro | ext4 | verified | no errors | 14/14 | |
+| ✅ | Debian 13 → Debian 13 | same distro | ext4 | verified | no errors | 14/14 | |
+| ✅ | Arch → Arch | same distro | ext4 | verified | no errors | 14/14 | |
+| 🟡 | Debian 13 → Ubuntu 26.04 | same family | btrfs | verified | 1 report | 14/14 | `grub-cloud-amd64` and `linux-image-amd64` not in the Ubuntu repos: expected, they are Debian-only |
+| 🟡 | Debian 13 → Ubuntu 26.04, trial (`--no-home`) | same family | — | verified, 756 KB | stopped at step 4/10 | — | home and SSH steps skipped as expected; same two Debian-only packages reported |
+| ⏳ | Arch → Fedora 44 | different family | exFAT | — | — | — | not completed: the test VM couldn't load the exFAT module after `pacman -Syu` upgraded its kernel (test-harness problem, fixed; to be run again) |
+
+Bugs found by these runs and fixed in the scripts:
+- the backup was always marked **"HAS ERRORS"** on any machine that didn't have `~/.ssh/id_ed25519`, `~/.claude/projects` and `~/.claude.json`: now only the critical files that exist (`~/.ssh/id_*`, `~/.ssh/config`, `~/.gnupg`, Claude Code data) are required;
+- Debian → Ubuntu: Debian's official source (written with `mirror+file:` URIs in cloud images) was copied to Ubuntu and broke `apt-get update`. Official sources are now recognized in more forms, and when the distribution changes third-party apt repositories are reported instead of copied (their URLs are distro-specific, e.g. Docker);
+- the closing hint about Claude Code chats is only shown if `~/.claude/projects` exists.
+
+Problems in the test environment itself (not in the scripts), worth knowing if you build your own:
+- Debian's `genericcloud` image has no USB drivers: the `generic` image is used instead;
+- a user in the `sudo`/`wheel` group *and* with a `NOPASSWD` rule still gets asked for a password by `sudo -v`: the test user only has the `NOPASSWD` rule;
+- cloud images ship without `cron`, and Fedora's without the exFAT kernel module (`kernel-modules`): the tests install them;
+- on Arch, load the filesystem module **before** `pacman -Syu`: after a kernel upgrade, modules can't be loaded until reboot.
+
+## Try your own distro hop first
+
+Before wiping anything, you can check how your system would land on another distribution, in a VM, **without copying your files**. A *trial backup* (`--no-home`) contains only package lists, repositories, `/etc`, `/opt`, `/usr/local`, snap/flatpak lists and the KDE look & feel: no home, no SSH/GPG keys, no wallet. It is usually a few MB.
+
+1. **Make a trial backup of your current system** (can be saved in your home, the folder is created if missing):
+
+   ```bash
+   bash migrate.sh save ~/distro-trial --no-home
+   ```
+
+2. **Start a VM of the distribution you want to try** (`fedora`, `debian`, `ubuntu`, `arch`):
+
+   ```bash
+   tests/vm/vm.sh create try ubuntu
+   tests/vm/vm.sh start try            # optional: --gui --mem 6144 to see a desktop
+   tests/vm/vm.sh wait try
+   ```
+
+3. **Copy the trial backup into the VM and restore it**:
+
+   ```bash
+   tests/vm/vm.sh push try ~/distro-trial/system-backup-* backup
+   tests/vm/vm.sh ssh try bash backup/migrate.sh restore backup
+   ```
+
+4. **Read the summary at the end**: packages not available on the new distribution, repositories to add by hand, services that could not be re-enabled. The full log is `~/restore-*.log` inside the VM.
+
+5. **Throw it away**: `tests/vm/vm.sh destroy try`
+
+Optional steps, only if you want to go further:
+- *(optional)* install your desktop in the VM before step 3 (e.g. `sudo apt install kubuntu-desktop`) and start it with `--gui`, to see the look & feel restored;
+- *(optional)* compare package lists without a VM: `pkgs/packages-explicit.txt` in the trial backup is what will be asked for on the new system;
+- *(optional)* copy a few single files to check them in the VM, e.g. `tests/vm/vm.sh push try ~/.config/<app> .config/<app>`; your real files are never needed for the trial;
+- *(optional)* pull the log back to the host: `tests/vm/vm.sh pull try 'restore-*.log' .`
+
+The VM's user is `tester`, not yours, and the restore will rename the VM's hostname to yours: both are expected in a trial.
 

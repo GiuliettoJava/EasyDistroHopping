@@ -11,11 +11,12 @@ fail() { echo "${RED}[FAILED]${RST} $*"; FAILED+=("$*"); }
 step() { local d="$1"; shift; if "$@"; then ok "$d"; else fail "$d"; fi; }
 
 [[ $EUID -ne 0 ]] || die "Do not run as root: run it as a normal user (it will ask for sudo)."
-[[ -f "$B/home.tar.zst" ]] || die "home.tar.zst not found in $B"
 [[ "$PM" != unknown ]] || die "Unsupported package manager: dnf (Fedora/RHEL), apt (Debian/Ubuntu) or pacman (Arch) is required."
 
 ENV_FILE="$B/meta/system-info.env"
 meta() { grep -m1 "^$1=" "$ENV_FILE" 2>/dev/null | cut -d= -f2-; }
+HOME_INCLUDED="$(meta home_included)"; HOME_INCLUDED="${HOME_INCLUDED:-1}"
+if ((HOME_INCLUDED)); then [[ -f "$B/home.tar.zst" ]] || die "home.tar.zst not found in $B"; fi
 OLD_USER="$(meta user)"
 OLD_HOSTNAME="$(meta hostname)"
 OLD_DE="$(meta de)"
@@ -33,7 +34,7 @@ PKG_EXPLICIT="$B/pkgs/packages-explicit.txt"; [[ -f "$PKG_EXPLICIT" ]] || PKG_EX
 PKG_LOCAL="$B/pkgs/packages-local.txt";       [[ -f "$PKG_LOCAL" ]]    || PKG_LOCAL="$B/pkgs/dnf-local-rpms.txt"
 PKG_AUR="$B/pkgs/aur-packages.txt"
 
-if [[ "$(id -un)" != "$OLD_USER" || "$HOME" != "/home/$OLD_USER" ]]; then
+if ((HOME_INCLUDED)) && [[ "$(id -un)" != "$OLD_USER" || "$HOME" != "/home/$OLD_USER" ]]; then
   echo "${YLW}Current user: $(id -un) — backup user: $OLD_USER${RST}"
   echo "With a different user, Claude Code chats and many paths will NOT match."
   yes_no "Continue anyway?" || exit 1
@@ -121,10 +122,15 @@ restore_repos_apt() {
   if [[ -f "$B/system/usr-share-keyrings.tar.zst" ]]; then
     step "keys in /usr/share/keyrings" bash -c "zstd -dc '$B/system/usr-share-keyrings.tar.zst' | sudo tar -C / -xpf - --skip-old-files"
   fi
+  local official='(deb|security|ftp[.a-z0-9]*)\.debian\.org|(archive|security|ports)\.ubuntu\.com|mirror\+file:/etc/apt/mirrors/|(debian-archive|ubuntu-archive)-keyring'
   while read -r f; do
     n="$(basename "$f")"
     [[ -e "/etc/apt/sources.list.d/$n" ]] && continue
-    sudo grep -qE '(deb\.debian\.org|security\.debian\.org|archive\.ubuntu\.com|security\.ubuntu\.com)' "$f" && continue
+    sudo grep -qE "$official" "$f" && continue
+    if [[ "$OLD_OS_ID" != "$NEW_OS_ID" ]]; then
+      fail "apt repo $n not added: it is for $OLD_OS_ID, add the $NEW_OS_ID version by hand"
+      continue
+    fi
     sudo install -m 644 -o root -g root "$f" "/etc/apt/sources.list.d/$n" && ok "repo $n" || { fail "repo $n"; continue; }
     if [[ -n "$OLD_CODENAME" && -n "$NEW_CODENAME" && "$OLD_CODENAME" != "$NEW_CODENAME" ]]; then
       sudo sed -i "s/\b$OLD_CODENAME\b/$NEW_CODENAME/g" "/etc/apt/sources.list.d/$n" && ok "repo $n: $OLD_CODENAME → $NEW_CODENAME"
@@ -155,6 +161,10 @@ else
   fail "repositories skipped: the backup uses $OLD_PM, this system uses $PM"
 fi
 
+if ((HOME_INCLUDED == 0)); then
+  info "[2/10] Home: skipped (trial backup made with --no-home)"
+  info "[3/10] SSH permissions: skipped"
+else
 info "[2/10] Restoring home (all files) — this is the long part"
 tar -C "$HOME" -cf - .config .local 2>/dev/null | zstd -q -o "$HOME/.home-fresh-before-restore.tar.zst" 2>/dev/null
 if command -v pv >/dev/null; then
@@ -175,6 +185,7 @@ if [[ -d "$HOME/.ssh" ]]; then
   find "$HOME/.ssh" -type f -name '*.pub' -exec chmod 644 {} +
   ok "~/.ssh fixed (700, keys 600)"; ls -la "$HOME/.ssh"
 else fail "~/.ssh not found"; fi
+fi
 
 AUR_HELPER=""
 bootstrap_aur_helper() {
@@ -455,5 +466,5 @@ echo "Log: $LOG"
 echo
 echo "Now REBOOT:  sudo reboot"
 [[ "$NEW_DE" == kde ]] && echo "After rebooting: KWallet will use the old system's password."
-echo "Claude Code chats are in ~/.claude/projects (claude --resume)."
+[[ -d "$HOME/.claude/projects" ]] && echo "Claude Code chats are in ~/.claude/projects (claude --resume)."
 echo "=================================================================="
