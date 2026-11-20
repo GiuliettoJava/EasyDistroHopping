@@ -15,6 +15,7 @@ migrate.sh to a virtual USB stick, then DST is restored from it and checked.
   --fs ext4|exfat|btrfs   filesystem of the USB stick (default ext4)
   --keep                  leave both VMs (stopped) for inspection
   --mem MB                RAM per VM (default 3072)
+  --twice                 run the restore a second time on the same VM and check again
 
 Distros: fedora, debian, ubuntu, arch
 EOF
@@ -23,9 +24,9 @@ EOF
 
 (($# >= 2)) || usage
 SRC_D="$1"; DST_D="$2"; shift 2
-FS=ext4; KEEP=0; MEM=3072
+FS=ext4; KEEP=0; MEM=3072; TWICE=0
 while (($#)); do case "$1" in
-  --fs) FS="$2"; shift 2 ;; --keep) KEEP=1; shift ;; --mem) MEM="$2"; shift 2 ;;
+  --fs) FS="$2"; shift 2 ;; --keep) KEEP=1; shift ;; --mem) MEM="$2"; shift 2 ;; --twice) TWICE=1; shift ;;
   *) usage ;; esac; done
 
 RUN_ID="$(date +%Y%m%d-%H%M%S)"
@@ -56,6 +57,7 @@ install_pkgs() {
   fi
 }
 fs_module() {
+  grep -qw "$1" /proc/filesystems && return
   sudo modprobe "$1" 2>/dev/null && return
   command -v dnf >/dev/null && sudo dnf install -y -q "kernel-modules-$(uname -r)" && sudo modprobe "$1"
 }
@@ -120,46 +122,70 @@ step "Create destination VM ($DST_D) and restore"
 "$VM" create "$DST" "$DST_D"
 "$VM" start "$DST" --mem "$MEM" --usb "$STICK"
 "$VM" wait "$DST"
-set +e
-on "$DST" bash -s <<EOF
+restore_once() {
+  set +e
+  on "$DST" bash -s <<EOF
 $PREP_PKGS
 [ "$FS" = exfat ] && install_pkgs exfatprogs >/dev/null
 [ "$FS" = btrfs ] && install_pkgs btrfs-progs >/dev/null
 fs_module $FS
 sudo mkdir -p /mnt/usb
 opts=""; [ "$FS" = exfat ] && opts="-o uid=\$(id -u),gid=\$(id -g)"
-sudo mount \$opts "\$(usb_dev)" /mnt/usb || exit 1
+mountpoint -q /mnt/usb || sudo mount \$opts "\$(usb_dev)" /mnt/usb || exit 1
 d=\$(ls -d /mnt/usb/system-backup-* /mnt/usb/backups/system-backup-* 2>/dev/null | tail -1)
 echo "Backup: \$d"
 yes y | bash "\$d/migrate.sh" restore "\$d"
 EOF
-RESTORE_RC=$?
-set -e
-on "$DST" 'cat ~/restore-*.log' >"$OUT/restore.log" 2>/dev/null || true
+  RESTORE_RC=$?
+  set -e
+  on "$DST" 'cat "$(ls -t ~/restore-*.log | head -1)"' >"$OUT/restore$1.log" 2>/dev/null || true
+}
 
-step "Checks on destination"
-CHECKS=$(on "$DST" bash -s <<EOF
+run_checks() {
+  CHECKS=$(on "$DST" bash -s <<EOF
 c() { if eval "\$2" >/dev/null 2>&1; then echo "PASS  \$1"; else echo "FAIL  \$1"; fi; }
+hosts_dups() { awk '!/^[[:space:]]*(#|\$)/{for(i=2;i<=NF;i++) print \$1, \$i}' /etc/hosts | sort | uniq -d; }
 c "home file"            'grep -qx "$TOKEN" ~/Documents/marker.txt'
 c "dotfile in .config"   'grep -q "$TOKEN" ~/.config/testapp/app.conf'
 c "bashrc"               'grep -q "$TOKEN" ~/.bashrc'
 c "trash excluded"       '[ ! -e ~/.local/share/Trash/files/old.txt ]'
 c "ssh config perms"     '[ "\$(stat -c %a ~/.ssh/config)" = 600 ]'
-c "crontab"              'crontab -l | grep -q "$TOKEN"'
+c "crontab"              '[ "\$(crontab -l | grep -c "$TOKEN")" = 1 ]'
 c "sysctl.d"             '[ -f /etc/sysctl.d/99-migrate-test.conf ]'
 c "hosts"                'grep -q migrate-test.local /etc/hosts'
+c "hosts no duplicates"  '[ -z "\$(hosts_dups)" ]'
 c "/opt"                 'grep -qx "$TOKEN" /opt/testapp/VERSION'
 c "/usr/local"           'grep -qx "$TOKEN" /usr/local/bin/migrate-test'
 c "hostname"             '[ "\$(hostnamectl --static 2>/dev/null || hostname)" = "$SRC" ]'
 c "owner of home"        '[ -z "\$(find ~ -xdev ! -user \$(id -un) -print -quit)" ]'
+c "docs/ in backup"      'ls /mnt/usb/system-backup-*/docs/restore-guide.md || ls /mnt/usb/backups/system-backup-*/docs/restore-guide.md'
+if command -v selinuxenabled >/dev/null && selinuxenabled; then
+  c "SELinux labels"     '[ -z "\$(sudo restorecon -Rnv /opt/testapp /usr/local/bin/migrate-test /etc/sysctl.d /etc/hosts ~)" ]'
+fi
 if [ "$(pm_of "$SRC_D")" = "$(pm_of "$DST_D")" ]; then
   c "package htop"       'command -v htop'
   c "package tree"       'command -v tree'
 fi
+hosts_dups | sed 's/^/  duplicate hosts entry: /'
 EOF
 ) || true
-echo "$CHECKS" | tee "$OUT/checks.txt"
-grep -A50 'Restore finished with' "$OUT/restore.log" | sed -n '1,30p' || true
+  echo "$CHECKS" | tee "$OUT/checks$1.txt"
+  grep -A50 'Restore finished with' "$OUT/restore$1.log" | sed -n '1,30p' || true
+}
+
+restore_once ""
+step "Checks on destination"
+run_checks ""
+
+if ((TWICE)); then
+  FIRST_RC=$RESTORE_RC; FIRST_CHECKS=$CHECKS
+  step "Second restore on the same destination"
+  restore_once "-2"
+  step "Checks after the second restore"
+  run_checks "-2"
+  CHECKS="$FIRST_CHECKS"$'\n'"$CHECKS"
+  ((FIRST_RC == 0)) || RESTORE_RC=$FIRST_RC
+fi
 
 FAILS=$(grep -c '^FAIL' <<<"$CHECKS" || true)
 echo
